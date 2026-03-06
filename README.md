@@ -1,8 +1,6 @@
-# Warehouse Simulator
+# Warehouse Simulation
 
-A two-agent warehouse simulation built in Python for a Final Year Project.
-
-Two simulated warehouse workers (agents) complete pickup orders inside a configurable grid warehouse. The simulation models realistic human factors — **fatigue**, **recovery**, and **experience** — based on the model from Malpas & Relvas (2025), and visualises everything in real time using Pygame.
+Simulated warehouse workers (agents) complete pickup orders inside a grid warehouse. The simulation models realistic human factors, and visualises everything in real time using Pygame.
 
 ---
 

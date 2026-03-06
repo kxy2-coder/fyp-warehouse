@@ -2,16 +2,13 @@
 # metrics.py — Simulation Metrics
 # =============================================================================
 # Owns ALL metric state and logic for the warehouse simulation.
-# To add a new metric in the future:
-#   1. Add its counter/state variables in __init__
-#   2. Update it inside update() each simulation tick
-#   3. Expose it as a property or attribute for draw_panel / print_summary
+# Works with any number of agents (N agents).
 #
 # Current metrics:
-#   - cell_conflicts : steps where both agents share the same non-depot cell
+#   - cell_conflicts : ticks where two or more agents share the same non-depot cell
 # =============================================================================
 
-from agent import TOTAL_ORDERS, BLOCKED_WAIT_TICKS
+from agent import BLOCKED_WAIT_TICKS
 
 FLASH_FRAMES = 12   # how many display frames the red conflict highlight lasts
 
@@ -23,28 +20,36 @@ class MetricsTracker:
     """
 
     def __init__(self):
-        # ── Cell conflict metric ──────────────────────────────────────────────
         self.cell_conflicts = 0
         self.conflict_cell  = None
         self.flash_timer    = 0
 
     # -------------------------------------------------------------------------
 
-    def update(self, agent1, agent2, depot):
+    def update(self, agents, depot):
         """
         Check all metric conditions and update counters.
-        Call after agent1.step() and agent2.step() each tick.
-        """
-        self._check_cell_conflict(agent1, agent2, depot)
+        Call after all agents have stepped each tick.
 
-    def _check_cell_conflict(self, agent1, agent2, depot):
+        agents — list of Agent objects
+        depot  — (row, col) of the depot cell
+        """
+        self._check_cell_conflict(agents, depot)
+
+    def _check_cell_conflict(self, agents, depot):
         """Detect and record cell-sharing conflicts (depot excluded)."""
-        if agent1.is_done() or agent2.is_done():
-            return
-        if agent1.pos == agent2.pos and agent1.pos != depot:
-            self.cell_conflicts += 1
-            self.conflict_cell   = agent1.pos
-            self.flash_timer     = FLASH_FRAMES
+        active = [a for a in agents if not a.is_done()]
+        # Build a dict: position -> list of agents there
+        pos_map = {}
+        for agent in active:
+            pos_map.setdefault(agent.pos, []).append(agent)
+
+        for pos, occupants in pos_map.items():
+            if len(occupants) >= 2 and pos != depot:
+                self.cell_conflicts += 1
+                self.conflict_cell   = pos
+                self.flash_timer     = FLASH_FRAMES
+                break   # count once per tick even if multiple conflicts
 
     # -------------------------------------------------------------------------
 
@@ -55,29 +60,36 @@ class MetricsTracker:
 
     # -------------------------------------------------------------------------
 
-    def print_step(self, agent1, agent2):
+    def print_step(self, agents):
         """Print a one-line terminal summary per simulation tick."""
-        print(
-            f"  A1[{agent1.orders_completed:2d}/{TOTAL_ORDERS}]"
-            f" {agent1.state:12s} fat={agent1.fatigue:.2f}"
-            f" | A2[{agent2.orders_completed:2d}/{TOTAL_ORDERS}]"
-            f" {agent2.state:12s} fat={agent2.fatigue:.2f}"
-            f" | conflicts={self.cell_conflicts}"
-        )
+        parts = []
+        for agent in agents:
+            parts.append(
+                f"A{agent.agent_id}[{agent.orders_completed:2d}/{agent.total_orders}]"
+                f" {agent.state:12s} fat={agent.fatigue:.2f}"
+            )
+        print("  " + " | ".join(parts) + f" | conflicts={self.cell_conflicts}")
 
-    def print_summary(self, agent1, agent2):
-        """Print final results when both agents finish."""
+    def print_summary(self, agents):
+        """Print final results when all agents finish."""
         print("=" * 55)
         print("  SIMULATION COMPLETE")
-        print(f"  Agent 1 (experienced) :")
-        print(f"    Distance   : {agent1.distance} cells")
-        print(f"    Work time  : {agent1.work_time:.4f} hrs")
-        print(f"    Final fatigue: {agent1.fatigue:.3f}")
-        print(f"  Agent 2 (novice) :")
-        print(f"    Distance   : {agent2.distance} cells")
-        print(f"    Work time  : {agent2.work_time:.4f} hrs")
-        print(f"    Final fatigue: {agent2.fatigue:.3f}")
+        for agent in agents:
+            exp_label = "Experienced" if agent.experience_B >= 100 else "Novice"
+            print(f"  Agent {agent.agent_id} ({exp_label}) :")
+            print(f"    Distance     : {agent.distance} cells")
+            print(f"    Work time    : {agent.work_time:.4f} hrs")
+            print(f"    Final fatigue: {agent.fatigue:.3f}")
+            print(f"    Blocked      : {agent.blocked_count}x ({agent.blocked_count * BLOCKED_WAIT_TICKS}s waited)")
         print(f"  Cell conflicts : {self.cell_conflicts}")
-        print(f"  Agent 1 blocked: {agent1.blocked_count}x ({agent1.blocked_count * BLOCKED_WAIT_TICKS}s waited)")
-        print(f"  Agent 2 blocked: {agent2.blocked_count}x ({agent2.blocked_count * BLOCKED_WAIT_TICKS}s waited)")
         print("=" * 55)
+    def collect_raw(self, agents):
+        return {
+            "cell_conflicts":    self.cell_conflicts,
+            "total_distance":    sum(a.distance for a in agents),
+            "total_work_time":   sum(a.work_time for a in agents),
+            "total_orders":      sum(a.orders_completed for a in agents),
+            "total_blocked":     sum(a.blocked_count for a in agents),
+            "avg_final_fatigue": sum(a.fatigue for a in agents) / len(agents),
+            "job_quota":         agents[0].total_orders,
+        }
