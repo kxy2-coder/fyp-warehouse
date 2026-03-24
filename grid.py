@@ -21,12 +21,23 @@
 #   depot_col            — which column the depot sits on (default = centre)
 #   shelf_start_row      — first row where shelves appear (default 1)
 #   shelf_end_row        — last row where shelves appear (default rows-2)
+#   cross_aisle_row      — row of the horizontal cross-aisle cutting through
+#                          the shelf zone (default = middle of shelf zone).
+#                          Set to None to disable the cross-aisle entirely.
 #
-# Adjusting shelf_start_row / shelf_end_row lets you create clear staging
+# Adjusting shelf_start_row / shelf_end_row create clear staging
 # areas near the depot, or compress shelves into a smaller zone — both of
 # which directly affect agent travel distance and are key layout variables
 # for optimization.
+#
+# The cross_aisle_row creates a horizontal corridor across the full width
+# of the warehouse, allowing agents to cut across without travelling to the
+# centre or border aisles. Its position within the shelf zone is a key
+# layout variable — moving it closer to the depot shortens return trips
+# for nearby shelves but splits the shelf zone unevenly.
 # =============================================================================
+
+import numpy as np
 
 # Cell type numbers
 EMPTY = 0
@@ -40,14 +51,15 @@ class Grid:
     Builds and stores the warehouse layout.
     """
 
-    def __init__(self, rows=15, cols=17, aisle_width=2,
+    def __init__(self, rows=25, cols=35, aisle_width=2,
                  centre_aisle_width=3, depot_row=None, depot_col=None,
-                 shelf_start_row=None, shelf_end_row=None):
+                 shelf_start_row=None, shelf_end_row=None,
+                 cross_aisle_row=None):
         """
         Create the warehouse grid.
 
-        rows               — how many rows tall (default 15)
-        cols               — how many columns wide (default 17, odd recommended)
+        rows               — how many rows tall (default 25)
+        cols               — how many columns wide (default 35, odd recommended)
         aisle_width        — aisle width between shelf blocks in columns (default 2)
         centre_aisle_width — main centre aisle width, must be odd (default 3)
         depot_row          — row the depot sits on (default 0 = top row)
@@ -61,9 +73,12 @@ class Grid:
                              Together with shelf_start_row, controls the vertical
                              extent of the shelf zone — a key layout variable for
                              optimizing average travel distance.
+        cross_aisle_row    — row of the horizontal cross-aisle within the shelf
+                             zone (default = middle row of the shelf zone).
+                             Clears the full row to walkable floor, cutting the
+                             shelf zone into two halves. Pass None to disable.
         """
-        if centre_aisle_width % 2 == 0:
-            raise ValueError("centre_aisle_width must be odd")
+        # centre_aisle_width can be any positive integer (odd constraint removed)
 
         centre  = cols // 2
         half_ca = centre_aisle_width // 2
@@ -99,8 +114,19 @@ class Grid:
                 f"shelf_end_row ({self.shelf_end_row})"
             )
 
-        # 2D grid of cell types — starts all empty
-        self.cells = [[EMPTY for _ in range(cols)] for _ in range(rows)]
+        # Cross-aisle row — horizontal corridor cutting through the shelf zone.
+        # Defaults to the middle row of the shelf zone; pass None to disable.
+        if cross_aisle_row is None:
+            self.cross_aisle_row = (self.shelf_start_row + self.shelf_end_row) // 2
+        else:
+            # Clamp to shelf zone bounds so it always falls inside the shelves
+            self.cross_aisle_row = max(self.shelf_start_row,
+                                       min(self.shelf_end_row, cross_aisle_row))
+
+        # 2D numpy array of cell types — starts all empty
+        # dtype int8: each cell stores a small integer (0-3), int8 uses 1 byte
+        # per cell vs ~28 bytes for a Python int, so much more memory efficient.
+        self.cells = np.full((rows, cols), EMPTY, dtype=np.int8)
 
         # Shelf reference labels — populated by _label_shelves()
         self.shelf_labels = {}
@@ -146,23 +172,23 @@ class Grid:
 
         self._shelf_cols = shelf_cols
 
-        # --- Fill every cell ---
-        dr, dc = self.depot_row, self.depot_col
+        # --- Fill every cell using numpy operations (no nested loop needed) ---
 
-        for r in range(self.rows):
-            for c in range(self.cols):
+        # 1. Everything starts as walkable floor (already set in __init__,
+        #    but reset here so _build() is self-contained if called again).
+        self.cells[:] = EMPTY
 
-                if r == dr and c == dc:
-                    # Depot cell
-                    self.cells[r][c] = DEPOT
+        # 2. Place ITEM in every shelf column within the shelf zone.
+        #    np.ix_ creates the right index structure for a rectangular region.
+        shelf_rows = np.arange(self.shelf_start_row, self.shelf_end_row + 1)
+        shelf_cols_arr = np.array(sorted(shelf_cols))
+        self.cells[np.ix_(shelf_rows, shelf_cols_arr)] = ITEM
 
-                elif self.shelf_start_row <= r <= self.shelf_end_row and c in shelf_cols:
-                    # Inside shelf zone and a shelf column — place an item
-                    self.cells[r][c] = ITEM
+        # 3. Clear the cross-aisle row — overwrites any shelves placed above.
+        self.cells[self.cross_aisle_row, :] = EMPTY
 
-                else:
-                    # Everything else: walkable floor
-                    self.cells[r][c] = EMPTY
+        # 4. Place the depot last so it is never overwritten.
+        self.cells[self.depot_row, self.depot_col] = DEPOT
 
     def _label_shelves(self):
         """
@@ -190,6 +216,9 @@ class Grid:
             letter = col_letter(idx)
             row_number = 1
             for row in range(self.shelf_start_row, self.shelf_end_row + 1):
+                if row == self.cross_aisle_row:
+                    # Cross-aisle row is walkable floor — no shelf label here
+                    continue
                 self.shelf_labels[(row, col)] = f"{letter}{row_number}"
                 row_number += 1
 
@@ -201,24 +230,32 @@ class Grid:
         """
         if row < 0 or row >= self.rows or col < 0 or col >= self.cols:
             return False  # outside the warehouse
-        return self.cells[row][col] in (EMPTY, DEPOT)
+        return self.cells[row, col] in (EMPTY, DEPOT)
 
     def get_all_item_positions(self):
         """
         Returns a list of (row, col) for every cell that has an item.
         Used when randomly picking which item to collect.
+        np.argwhere returns all positions where the condition is True,
+        much faster than a nested loop on large grids.
         """
-        return [
-            (r, c)
-            for r in range(self.rows)
-            for c in range(self.cols)
-            if self.cells[r][c] == ITEM
-        ]
+        return [tuple(p) for p in np.argwhere(self.cells == ITEM)]
 
     def remove_item(self, row, col):
         """
         Called when the agent picks up an item.
         The shelf becomes empty (SHELF=1) — the rack is still there, just no item.
         """
-        if self.cells[row][col] == ITEM:
-            self.cells[row][col] = SHELF
+        if self.cells[row, col] == ITEM:
+            self.cells[row, col] = SHELF
+
+    def storage_map(self):
+        """
+        Returns a 2D numpy array (same shape as self.cells) where:
+            1 = storage cell (SHELF or ITEM — a rack exists here)
+            0 = everything else (floor, depot, aisle)
+
+        Useful for reporting layout utilisation and visualising the storage
+        footprint independently of item state (full vs picked).
+        """
+        return ((self.cells == ITEM) | (self.cells == SHELF)).astype(np.int8)

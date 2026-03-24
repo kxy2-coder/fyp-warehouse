@@ -18,6 +18,7 @@
 # =============================================================================
 
 import argparse
+import random
 import pygame
 import sys
 import time
@@ -42,8 +43,9 @@ def parse_args():
     parser.add_argument("--centre-aisle",  type=int,   default=3,    help="Centre aisle width, must be odd (default 3)")
     parser.add_argument("--depot-row",     type=int,   default=None, help="Depot row (default 0 = top row)")
     parser.add_argument("--depot-col",     type=int,   default=None, help="Depot column (default = centre)")
-    parser.add_argument("--shelf-start",   type=int,   default=None, help="First row shelves appear (default 1)")
-    parser.add_argument("--shelf-end",     type=int,   default=None, help="Last row shelves appear (default rows-2)")
+    parser.add_argument("--shelf-start",     type=int,   default=None, help="First row shelves appear (default 1)")
+    parser.add_argument("--shelf-end",       type=int,   default=None, help="Last row shelves appear (default rows-2)")
+    parser.add_argument("--cross-aisle-row", type=int,   default=None, help="Row of horizontal cross-aisle (default = middle of shelf zone)")
     parser.add_argument("--cell-size",     type=int,   default=35,   help="Pixel size per cell (default 35)")
     parser.add_argument("--experiment",   action="store_true",      help="Silent multi-run averaging mode (no Pygame)")
     parser.add_argument("--runs",         type=int,   default=None, help="Override NUM_RUNS for --experiment mode")
@@ -63,7 +65,8 @@ def parse_args():
 def run_experiment(args):
     """
     Run NUM_RUNS silent simulations, compute and print the 3 KPIs,
-    then automatically open the Pygame visual demo with the same settings.
+    then open the Pygame visual replaying the most representative run —
+    the run whose individual KPIs sat closest to the 50-run averages.
     """
     num_runs = args.runs if args.runs is not None else NUM_RUNS
 
@@ -73,9 +76,14 @@ def run_experiment(args):
     print("  Job quota distribution: N(mean={}, std={})  [placeholder]".format(JOBS_MEAN, JOBS_STD))
     print("=" * 60)
 
-    accumulated = {}
+    accumulated  = {}
+    run_records  = []   # (seed, per_run_kpis) for every run
 
     for run_i in range(1, num_runs + 1):
+        # Fix the random seed for this run so it can be replayed exactly later
+        seed = run_i * 7919   # deterministic, spread-out seeds
+        random.seed(seed)
+
         grid = Grid(
             rows=args.rows, cols=args.cols,
             aisle_width=args.aisle_width,
@@ -84,6 +92,7 @@ def run_experiment(args):
             depot_col=args.depot_col,
             shelf_start_row=args.shelf_start,
             shelf_end_row=args.shelf_end,
+            cross_aisle_row=args.cross_aisle_row,
         )
         quota   = draw_job_quota()
         agents  = [Agent(grid, agent_id=i + 1, total_orders=quota) for i in range(args.agents)]
@@ -99,6 +108,14 @@ def run_experiment(args):
         for k, v in raw.items():
             accumulated[k] = accumulated.get(k, 0.0) + v
 
+        # Compute this run's KPIs for representative-run selection later
+        wt = raw["total_work_time"]
+        ord_ = raw["total_orders"]
+        run_picks = (ord_ / wt) if wt > 0 else 0.0
+        run_dist  = raw["total_distance"] / args.agents
+        run_cong  = (raw["cell_conflicts"] / ord_) if ord_ > 0 else 0.0
+        run_records.append((seed, run_picks, run_dist, run_cong))
+
         print("  Run {:3d}/{} | quota={:3d} | orders={:.0f} | dist={:.0f} | conflicts={:.0f}".format(
             run_i, num_runs,
             raw["job_quota"], raw["total_orders"],
@@ -111,6 +128,25 @@ def run_experiment(args):
     picks_per_hour  = avg["total_orders"] / avg["total_work_time"] if avg["total_work_time"] > 0 else 0.0
     dist_per_agent  = avg["total_distance"] / args.agents
     congestion_rate = avg["cell_conflicts"] / avg["total_orders"] if avg["total_orders"] > 0 else 0.0
+
+    # ── Find the most representative run ─────────────────────────────────────
+    # Normalise each KPI by its range across the 50 runs so no single KPI
+    # dominates the distance calculation, then pick the run closest to the avg.
+    all_picks = [r[1] for r in run_records]
+    all_dist  = [r[2] for r in run_records]
+    all_cong  = [r[3] for r in run_records]
+
+    range_picks = max(all_picks) - min(all_picks) or 1.0
+    range_dist  = max(all_dist)  - min(all_dist)  or 1.0
+    range_cong  = max(all_cong)  - min(all_cong)  or 1.0
+
+    best_seed, best_dist = None, float("inf")
+    for seed, rp, rd, rc in run_records:
+        d = (((rp - picks_per_hour) / range_picks) ** 2 +
+             ((rd - dist_per_agent) / range_dist)  ** 2 +
+             ((rc - congestion_rate) / range_cong) ** 2)
+        if d < best_dist:
+            best_dist, best_seed = d, seed
 
     # ── Print results ─────────────────────────────────────────────────────────
     W = 60
@@ -136,17 +172,17 @@ def run_experiment(args):
     print("  {:<42s} {:>10.1f}".format("Avg cell conflicts",           avg["cell_conflicts"]))
     print("=" * W)
     print()
-    print("  Opening visual demonstration run — close window to exit.")
+    print("  Replaying most representative run (seed={}) — close window to exit.".format(best_seed))
     print("=" * W)
     print()
 
-    # ── Launch visual demo with KPIs to show on panel ─────────────────────────
+    # ── Replay the representative run as the visual demo ──────────────────────
     run_visual(args, demo_mode=True, kpi_results={
         "num_runs":        num_runs,
         "picks_per_hour":  picks_per_hour,
         "dist_per_agent":  dist_per_agent,
         "congestion_rate": congestion_rate,
-    })
+    }, replay_seed=best_seed)
 
 # =============================================================================
 # DISPLAY SETTINGS
@@ -265,7 +301,7 @@ def draw_grid(surface, grid, agents, metrics, font_small):
     for r in range(grid.rows):
         for c in range(grid.cols):
             rect = cell_rect(r, c)
-            cell = grid.cells[r][c]
+            cell = grid.cells[r, c]
             pos  = (r, c)
 
             # Base colour
@@ -491,12 +527,19 @@ def resolve_right_of_way(agents):
 # VISUAL MODE + ENTRY POINT
 # =============================================================================
 
-def run_visual(args, demo_mode=False, kpi_results=None):
+def run_visual(args, demo_mode=False, kpi_results=None, replay_seed=None):
     """Run one simulation with the Pygame window.
     demo_mode=True and kpi_results provided when called from run_experiment.
+    replay_seed: if set, seeds random before building the run so it exactly
+                 reproduces the most representative run from the experiment.
     """
     global CELL_SIZE
     CELL_SIZE = args.cell_size
+
+    # Reproduce the representative run's stochastic choices (quota draw,
+    # worker types, fatigue rolls) by re-seeding before constructing anything.
+    if replay_seed is not None:
+        random.seed(replay_seed)
 
     pygame.init()
 
@@ -508,6 +551,7 @@ def run_visual(args, demo_mode=False, kpi_results=None):
         depot_col=args.depot_col,
         shelf_start_row=args.shelf_start,
         shelf_end_row=args.shelf_end,
+        cross_aisle_row=args.cross_aisle_row,
     )
 
     # Draw ONE job quota shared by all agents this run
@@ -520,7 +564,13 @@ def run_visual(args, demo_mode=False, kpi_results=None):
     ]
 
     print("=" * 55)
-    mode_label = "DEMO RUN (after experiment)" if demo_mode else "VISUAL MODE"
+    if demo_mode and replay_seed is not None:
+        mode_label = "REPRESENTATIVE RUN (seed={}, closest to {}-run avg)".format(
+            replay_seed, kpi_results.get("num_runs", "?") if kpi_results else "?")
+    elif demo_mode:
+        mode_label = "DEMO RUN (after experiment)"
+    else:
+        mode_label = "VISUAL MODE"
     print("  Warehouse Simulator  [{}]".format(mode_label))
     print("=" * 55)
     print(f"  Grid         : {grid.rows} rows x {grid.cols} cols")
@@ -598,4 +648,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
+    
