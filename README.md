@@ -6,7 +6,7 @@ Layout design for logistics facilities to maximise operational throughput using 
 
 ## Overview
 
-This project simulates a warehouse operated by multiple human agents and uses a Reinforcement Learning (RL) model to find the layout configuration that maximises performance. The simulation models realistic human behaviour — fatigue buildup, recovery, and experience-based learning curves — based on Malpas & Relvas (2025).
+This project simulates a warehouse operated by multiple human agents and uses a Reinforcement Learning (RL) model to find the layout configuration that maximises performance. 
 
 The RL agent (PPO) explores different warehouse layouts by adjusting six layout parameters, including a horizontal cross-aisle, and is rewarded based on three KPIs: picks per hour, travel distance, and congestion rate.
 
