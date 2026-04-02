@@ -30,7 +30,7 @@ The RL agent (PPO) explores different warehouse layouts by adjusting six layout 
 Sim/
 ├── main.py           — Simulation entry point: visual mode and experiment mode
 ├── agent.py          — Warehouse worker: fatigue, experience, FSM states
-├── grid.py           — Warehouse layout builder (numpy-backed grid)
+├── grid.py           — Warehouse layout 
 ├── pathfinder.py     — A* pathfinding for agent navigation
 ├── metrics.py        — KPI tracking: picks/hour, distance, congestion
 ├── rl_env.py         — Gymnasium environment for PPO layout optimisation
