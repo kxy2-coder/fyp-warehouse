@@ -31,17 +31,7 @@ Job arrivals follow a Nonhomogeneous Poisson Process (NHPP) with time-varying de
 ## Project Structure
 
 ```
-<<<<<<< HEAD
 Sim/
-├── main.py           — Simulation entry point: visual mode and experiment mode
-├── agent.py          — Warehouse worker: fatigue, experience, FSM states
-├── grid.py           — Warehouse layout 
-├── pathfinder.py     — A* pathfinding for agent navigation
-├── metrics.py        — KPI tracking: picks/hour, distance, congestion
-├── rl_env.py         — Gymnasium environment for PPO layout optimisation
-└── plot_training.py  — Visualise training results from training_log.csv
-=======
-Sim_V2/
 ├── main.py               — Simulation entry point: visual mode and experiment mode
 ├── agent.py              — Warehouse worker: fatigue, experience, NHPP arrivals, FSM states
 ├── grid.py               — Warehouse layout builder (numpy-backed grid)
@@ -52,7 +42,6 @@ Sim_V2/
 ├── plot_agent_traces.py  — Per-agent performance trace plots from agent_traces.csv
 ├── plot_heatmap.py       — Spatial conflict heatmap from conflict_heatmap.csv
 └── plot_training.py      — Visualise training results from training_log.csv
->>>>>>> e5ec011 (add spatial congestion logging and per-agent performance trace)
 ```
 
 ---
@@ -226,10 +215,10 @@ Every 10 minutes (600 ticks) a snapshot is recorded per agent:
 
 | Field | Description |
 |-------|-------------|
-| `picks` | Cumulative orders completed |
-| `distance` | Cumulative cells travelled |
-| `idle_ticks` | Cumulative ticks spent waiting for a job |
-| `blocked_events` | Cumulative collision losses |
+| `picks` | Orders completed |
+| `distance` | Cells travelled |
+| `idle_ticks` | Ticks spent waiting for a job |
+| `blocked_events` | Collision losses |
 | `fatigue` | Current fatigue level (0–1) |
 
 Snapshots are averaged across all runs and saved to `agent_traces.csv`. Run `--plot-traces` to produce `agent_traces.png` showing per-bin (non-cumulative) rates for each agent.
