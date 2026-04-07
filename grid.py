@@ -37,6 +37,7 @@
 # for nearby shelves but splits the shelf zone unevenly.
 # =============================================================================
 
+import random
 import numpy as np
 
 # Cell type numbers
@@ -54,7 +55,7 @@ class Grid:
     def __init__(self, rows=25, cols=35, aisle_width=2,
                  centre_aisle_width=3, depot_row=None, depot_col=None,
                  shelf_start_row=None, shelf_end_row=None,
-                 cross_aisle_row=None):
+                 cross_aisle_row=None, replenish_delay=100):
         """
         Create the warehouse grid.
 
@@ -123,6 +124,14 @@ class Grid:
             self.cross_aisle_row = max(self.shelf_start_row,
                                        min(self.shelf_end_row, cross_aisle_row))
 
+        # Replenishment: delay (in ticks) before a picked cell restocks.
+        # Randomised per cell between 80%–150% of this value so cells don't
+        # all restock simultaneously.
+        self.replenish_delay = replenish_delay
+
+        # Tracks depleted cells: {(row, col): ticks_remaining}
+        self._depleted = {}
+
         # 2D numpy array of cell types — starts all empty
         # dtype int8: each cell stores a small integer (0-3), int8 uses 1 byte
         # per cell vs ~28 bytes for a Python int, so much more memory efficient.
@@ -190,6 +199,15 @@ class Grid:
         # 4. Place the depot last so it is never overwritten.
         self.cells[self.depot_row, self.depot_col] = DEPOT
 
+        # 5. Precompute a plain Python bool list-of-lists for fast walkability
+        #    checks in the A* pathfinder.  Single-element numpy array access has
+        #    per-call overhead; Python list indexing is ~5-10x faster and
+        #    is_walkable() is called hundreds of thousands of times per run.
+        #    self.cells stays as a numpy array for batch operations elsewhere.
+        #    This table never needs updating: ITEM→SHELF (remove_item) keeps the
+        #    cell non-walkable, and the depot never changes.
+        self._walkable = ((self.cells == EMPTY) | (self.cells == DEPOT)).tolist()
+
     def _label_shelves(self):
         """
         Assign alphanumeric reference labels to every shelf cell.
@@ -230,7 +248,7 @@ class Grid:
         """
         if row < 0 or row >= self.rows or col < 0 or col >= self.cols:
             return False  # outside the warehouse
-        return self.cells[row, col] in (EMPTY, DEPOT)
+        return self._walkable[row][col]
 
     def get_all_item_positions(self):
         """
@@ -241,10 +259,35 @@ class Grid:
         """
         return [tuple(p) for p in np.argwhere(self.cells == ITEM)]
 
+    def deplete_item(self, row, col):
+        """
+        Called when an agent picks an item. Marks the cell as temporarily
+        depleted (SHELF) and schedules it for restocking after a randomised
+        delay in the range [80%, 150%] of replenish_delay.
+        """
+        if self.cells[row, col] == ITEM:
+            self.cells[row, col] = SHELF
+            lo = max(1, int(self.replenish_delay * 0.8))
+            hi = int(self.replenish_delay * 1.5)
+            self._depleted[(row, col)] = random.randint(lo, hi)
+
+    def tick_replenishment(self):
+        """
+        Advance all replenishment timers by one tick.
+        Any cell whose timer reaches zero is restocked (SHELF → ITEM).
+        Call once per simulation tick.
+        """
+        expired = [pos for pos, t in self._depleted.items() if t <= 1]
+        for pos in expired:
+            self.cells[pos[0], pos[1]] = ITEM
+            del self._depleted[pos]
+        for pos in self._depleted:
+            self._depleted[pos] -= 1
+
     def remove_item(self, row, col):
         """
-        Called when the agent picks up an item.
-        The shelf becomes empty (SHELF=1) — the rack is still there, just no item.
+        Permanently remove an item (ITEM → SHELF, no restock timer).
+        Kept for backward compatibility; prefer deplete_item() in normal use.
         """
         if self.cells[row, col] == ITEM:
             self.cells[row, col] = SHELF

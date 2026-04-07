@@ -22,11 +22,13 @@ import random
 import pygame
 import sys
 import time
-import itertools
 
 from grid    import Grid, EMPTY, SHELF, ITEM, DEPOT
-from agent   import Agent, draw_job_quota, JOBS_MEAN, JOBS_STD, NUM_RUNS, BLOCKED_WAIT_TICKS
-from metrics import MetricsTracker
+from agent   import (Agent, nhpp_arrival, SHIFT_TICKS, LAMBDA_BASE,
+                     DEMAND_BETA, NUM_RUNS, BLOCKED_WAIT_TICKS,
+                     STATE_WAITING, STATE_TO_ITEM, STATE_PICKING,
+                     STATE_TO_DEPOT, STATE_RESTING, STATE_ALL_DONE)
+from metrics import MetricsTracker, TraceLogger
 
 
 # =============================================================================
@@ -47,8 +49,15 @@ def parse_args():
     parser.add_argument("--shelf-end",       type=int,   default=None, help="Last row shelves appear (default rows-2)")
     parser.add_argument("--cross-aisle-row", type=int,   default=None, help="Row of horizontal cross-aisle (default = middle of shelf zone)")
     parser.add_argument("--cell-size",     type=int,   default=35,   help="Pixel size per cell (default 35)")
-    parser.add_argument("--experiment",   action="store_true",      help="Silent multi-run averaging mode (no Pygame)")
-    parser.add_argument("--runs",         type=int,   default=None, help="Override NUM_RUNS for --experiment mode")
+    parser.add_argument("--experiment",      action="store_true",      help="Silent multi-run averaging mode (no Pygame)")
+    parser.add_argument("--runs",            type=int,   default=None, help="Override NUM_RUNS for --experiment mode")
+    parser.add_argument("--replenish-delay", type=int,   default=100,  help="Ticks before a picked shelf restocks (default 100)")
+    parser.add_argument("--lambda-base",    type=float, default=None, help=f"NHPP base arrival rate per tick (default {LAMBDA_BASE})")
+    parser.add_argument("--beta",           type=float, default=None, help=f"NHPP amplitude parameter (default {DEMAND_BETA})")
+    parser.add_argument("--plot-workload",  action="store_true",      help="Save workload analysis plot after --experiment run")
+    parser.add_argument("--plot-traces",   action="store_true",      help="Save per-agent trace plot after --experiment run")
+    parser.add_argument("--plot-heatmap",  action="store_true",      help="Save conflict heatmap after --experiment run")
+    parser.add_argument("--bin",            type=int,   default=600,  help="Bin size (ticks) for workload plot (default 600 = 10 min)")
     return parser.parse_args()
 
 
@@ -56,32 +65,35 @@ def parse_args():
 # =============================================================================
 # EXPERIMENT MODE - silent multi-run averaging
 # =============================================================================
-# Runs NUM_RUNS simulations with no Pygame window.
-# Each run draws a fresh job quota, builds a fresh grid, steps until all
-# agents finish, collects raw numbers. After all runs, prints averaged results.
-# KPIs are NOT calculated here - raw numbers only.
-# Apply your KPI formulas to the averages once they are finalised.
 
 def run_experiment(args):
     """
     Run NUM_RUNS silent simulations, compute and print the 3 KPIs,
-    then open the Pygame visual replaying the most representative run —
-    the run whose individual KPIs sat closest to the 50-run averages.
+    then open the Pygame visual replaying the most representative run.
     """
     num_runs = args.runs if args.runs is not None else NUM_RUNS
 
     print("=" * 60)
     print("  EXPERIMENT MODE")
     print("  Runs: {}   Agents: {}   Grid: {}x{}".format(num_runs, args.agents, args.rows, args.cols))
-    print("  Job quota distribution: N(mean={}, std={})  [placeholder]".format(JOBS_MEAN, JOBS_STD))
+    print("  NHPP demand: λ_base={}, β={}, shift={} ticks (8 hr)".format(LAMBDA_BASE, DEMAND_BETA, SHIFT_TICKS))
     print("=" * 60)
 
     accumulated  = {}
-    run_records  = []   # (seed, per_run_kpis) for every run
+    run_records  = []
+
+    # Workload tracking (only populated when --plot-workload is set)
+    all_arrivals    = []
+    all_completions = []
+
+    # Trace accumulator: dict keyed by (tick, agent_id) → list of snapshots
+    trace_accum = {}
+
+    # Spatial congestion accumulator: (row, col) → total conflict count across runs
+    spatial_accum = {}
 
     for run_i in range(1, num_runs + 1):
-        # Fix the random seed for this run so it can be replayed exactly later
-        seed = run_i * 7919   # deterministic, spread-out seeds
+        seed = run_i * 7919
         random.seed(seed)
 
         grid = Grid(
@@ -93,45 +105,67 @@ def run_experiment(args):
             shelf_start_row=args.shelf_start,
             shelf_end_row=args.shelf_end,
             cross_aisle_row=args.cross_aisle_row,
+            replenish_delay=args.replenish_delay,
         )
-        quota   = draw_job_quota()
-        agents  = [Agent(grid, agent_id=i + 1, total_orders=quota) for i in range(args.agents)]
-        metrics = MetricsTracker()
+        # ONE Agent object manages all args.agents workers simultaneously
+        agent        = Agent(args.agents, grid, quota=0)
+        metrics      = MetricsTracker()
+        trace_logger = TraceLogger(args.agents, bin_size=600)
 
-        while not all(a.is_done() for a in agents):
-            resolve_right_of_way(agents)
-            for agent in agents:
-                agent.step()
-            metrics.update(agents, grid.depot)
+        if args.plot_workload:
+            import numpy as np
+            run_arrivals    = np.zeros(SHIFT_TICKS, dtype=np.int32)
+            run_completions = np.zeros(SHIFT_TICKS, dtype=np.int32)
+            prev_completed  = 0
 
-        raw = metrics.collect_raw(agents)
+        for tick in range(SHIFT_TICKS):
+            if nhpp_arrival(tick):
+                agent.add_job()
+                if args.plot_workload:
+                    run_arrivals[tick] = 1
+            agent.step()
+            resolve_conflicts(agent)
+            grid.tick_replenishment()
+            metrics.update(agent, grid.depot, tick)
+            if (tick + 1) % 600 == 0:
+                trace_logger.snapshot(tick + 1, agent)
+            if args.plot_workload:
+                cur = int(agent.orders_completed.sum())
+                run_completions[tick] = cur - prev_completed
+                prev_completed = cur
+
+        if args.plot_workload:
+            all_arrivals.append(run_arrivals)
+            all_completions.append(run_completions)
+
+        for rec in trace_logger.records:
+            key = (rec["tick"], rec["agent_id"])
+            trace_accum.setdefault(key, []).append(rec)
+
+        for _, row, col in metrics.spatial_log:
+            spatial_accum[(row, col)] = spatial_accum.get((row, col), 0) + 1
+
+        raw = metrics.collect_raw(agent)
         for k, v in raw.items():
             accumulated[k] = accumulated.get(k, 0.0) + v
 
-        # Compute this run's KPIs for representative-run selection later
-        wt = raw["total_work_time"]
-        ord_ = raw["total_orders"]
-        run_picks = (ord_ / wt) if wt > 0 else 0.0
-        run_dist  = raw["total_distance"] / args.agents
-        run_cong  = (raw["cell_conflicts"] / ord_) if ord_ > 0 else 0.0
+        completed_ = raw["jobs_completed"]
+        run_picks  = completed_ / 8.0
+        run_dist   = raw["total_distance"] / args.agents
+        run_cong   = (raw["cell_conflicts"] * BLOCKED_WAIT_TICKS * 100) / SHIFT_TICKS
         run_records.append((seed, run_picks, run_dist, run_cong))
 
-        print("  Run {:3d}/{} | quota={:3d} | orders={:.0f} | dist={:.0f} | conflicts={:.0f}".format(
+        print("  Run {:3d}/{} | arrived={:.0f} | completed={:.0f} | dist={:.0f} | conflicts={:.0f}".format(
             run_i, num_runs,
-            raw["job_quota"], raw["total_orders"],
+            raw["jobs_arrived"], raw["jobs_completed"],
             raw["total_distance"], raw["cell_conflicts"]))
 
-    # ── Compute averages ──────────────────────────────────────────────────────
     avg = {k: v / num_runs for k, v in accumulated.items()}
 
-    # ── Compute the 3 KPIs ───────────────────────────────────────────────────
-    picks_per_hour  = avg["total_orders"] / avg["total_work_time"] if avg["total_work_time"] > 0 else 0.0
+    picks_per_hour  = avg["jobs_completed"] / 8.0
     dist_per_agent  = avg["total_distance"] / args.agents
-    congestion_rate = avg["cell_conflicts"] / avg["total_orders"] if avg["total_orders"] > 0 else 0.0
+    congestion_rate = (avg["cell_conflicts"] * BLOCKED_WAIT_TICKS * 100 ) / SHIFT_TICKS
 
-    # ── Find the most representative run ─────────────────────────────────────
-    # Normalise each KPI by its range across the 50 runs so no single KPI
-    # dominates the distance calculation, then pick the run closest to the avg.
     all_picks = [r[1] for r in run_records]
     all_dist  = [r[2] for r in run_records]
     all_cong  = [r[3] for r in run_records]
@@ -148,7 +182,6 @@ def run_experiment(args):
         if d < best_dist:
             best_dist, best_seed = d, seed
 
-    # ── Print results ─────────────────────────────────────────────────────────
     W = 60
     print()
     print("=" * W)
@@ -159,15 +192,14 @@ def run_experiment(args):
     print("  " + "-" * (W - 2))
     print("  {:<42s} {:>10.2f}".format("Picks per Hour  [PRIMARY]",               picks_per_hour))
     print("  {:<42s} {:>10.1f}".format("Avg Travel Distance per Agent (cells)",    dist_per_agent))
-    print("  {:<42s} {:>10.4f}".format("Congestion Rate  (conflicts / pick)",      congestion_rate))
+    print("  {:<42s} {:>9.2f}%".format("Congestion Rate  (% shift time affected)", congestion_rate))
     print()
     print("  RAW AVERAGES")
     print("  " + "-" * (W - 2))
-    print("  {:<42s} {:>10.1f}".format("Avg job quota drawn",          avg["job_quota"]))
-    print("  {:<42s} {:>10.1f}".format("Avg total orders completed",   avg["total_orders"]))
+    print("  {:<42s} {:>10.1f}".format("Avg jobs arrived (NHPP)",      avg["jobs_arrived"]))
+    print("  {:<42s} {:>10.1f}".format("Avg jobs completed",           avg["jobs_completed"]))
     print("  {:<42s} {:>10.1f}".format("Avg total distance (cells)",   avg["total_distance"]))
     print("  {:<42s} {:>10.4f}".format("Avg total work time (hrs)",    avg["total_work_time"]))
-    print("  {:<42s} {:>10.1f}".format("Avg total blocking events",    avg["total_blocked"]))
     print("  {:<42s} {:>10.3f}".format("Avg final fatigue",            avg["avg_final_fatigue"]))
     print("  {:<42s} {:>10.1f}".format("Avg cell conflicts",           avg["cell_conflicts"]))
     print("=" * W)
@@ -176,13 +208,59 @@ def run_experiment(args):
     print("=" * W)
     print()
 
-    # ── Replay the representative run as the visual demo ──────────────────────
+    if args.plot_workload:
+        from plot_workload import plot_from_data
+        plot_from_data(all_arrivals, all_completions,
+                       bin_size=args.bin, n_agents=args.agents)
+
+    # Save averaged agent traces to CSV
+    trace_csv = "agent_traces.csv"
+    avg_trace_records = []
+    for (tick, agent_id), recs in sorted(trace_accum.items()):
+        n = len(recs)
+        avg_trace_records.append({
+            "tick":           tick,
+            "agent_id":       agent_id,
+            "picks":          round(sum(r["picks"]          for r in recs) / n, 2),
+            "distance":       round(sum(r["distance"]       for r in recs) / n, 2),
+            "idle_ticks":     round(sum(r["idle_ticks"]     for r in recs) / n, 2),
+            "blocked_events": round(sum(r["blocked_events"] for r in recs) / n, 2),
+            "fatigue":        round(sum(r["fatigue"]        for r in recs) / n, 4),
+        })
+    import csv as _csv
+    if avg_trace_records:
+        with open(trace_csv, "w", newline="") as f:
+            writer = _csv.DictWriter(f, fieldnames=avg_trace_records[0].keys())
+            writer.writeheader()
+            writer.writerows(avg_trace_records)
+        print(f"  Agent traces saved → {trace_csv}")
+
+    if args.plot_traces:
+        from plot_agent_traces import plot_from_traces
+        plot_from_traces(trace_csv)
+
+    # Save averaged spatial conflict heatmap CSV
+    heatmap_csv = "conflict_heatmap.csv"
+    if spatial_accum:
+        import csv as _csv2
+        with open(heatmap_csv, "w", newline="") as f:
+            writer = _csv2.writer(f)
+            writer.writerow(["row", "col", "avg_count"])
+            for (row, col), total in sorted(spatial_accum.items()):
+                writer.writerow([row, col, round(total / num_runs, 4)])
+        print(f"  Conflict heatmap CSV saved → {heatmap_csv}")
+
+    if args.plot_heatmap:
+        from plot_heatmap import plot_from_csv
+        plot_from_csv(heatmap_csv, grid_rows=args.rows, grid_cols=args.cols)
+
     run_visual(args, demo_mode=True, kpi_results={
         "num_runs":        num_runs,
         "picks_per_hour":  picks_per_hour,
         "dist_per_agent":  dist_per_agent,
         "congestion_rate": congestion_rate,
     }, replay_seed=best_seed)
+
 
 # =============================================================================
 # DISPLAY SETTINGS
@@ -192,7 +270,6 @@ CELL_SIZE   = 40
 MARGIN      = 2
 PANEL_WIDTH = 320
 
-# Colours
 COL_BG           = (15,  20,  30)
 COL_EMPTY        = (30,  38,  50)
 COL_SHELF        = (50,  58,  72)
@@ -209,16 +286,15 @@ COL_FATIGUE_MED  = (220, 180,  40)
 COL_FATIGUE_HIGH = (220,  60,  50)
 COL_RESTING      = ( 80, 140, 220)
 
-# A palette of agent colours — cycles if more agents than colours
 AGENT_COLOURS = [
-    ( 60, 200,  80),   # green
-    ( 60, 180, 220),   # blue
-    (220, 100,  50),   # orange
-    (180,  60, 200),   # purple
-    (220, 220,  60),   # yellow
-    (200,  80, 120),   # pink
-    ( 80, 200, 180),   # teal
-    (200, 140,  60),   # amber
+    ( 60, 200,  80),
+    ( 60, 180, 220),
+    (220, 100,  50),
+    (180,  60, 200),
+    (220, 220,  60),
+    (200,  80, 120),
+    ( 80, 200, 180),
+    (200, 140,  60),
 ]
 
 TARGET_COLOURS = [
@@ -294,9 +370,13 @@ def draw_fatigue_bar(surface, x, y, width, fatigue, font_small):
     return y + bar_h + 16
 
 
-def draw_grid(surface, grid, agents, metrics, font_small):
+def draw_grid(surface, grid, agent, metrics, font_small):
     """Draw the warehouse grid, agents, paths, targets, conflict flash."""
-    upcoming = [set(a.path[a.path_index:]) for a in agents]
+    # Upcoming path cells for each agent (used to draw path dots).
+    upcoming = [
+        set(agent.paths[i][agent.path_indices[i]:])
+        for i in range(agent.n)
+    ]
 
     for r in range(grid.rows):
         for c in range(grid.cols):
@@ -304,7 +384,6 @@ def draw_grid(surface, grid, agents, metrics, font_small):
             cell = grid.cells[r, c]
             pos  = (r, c)
 
-            # Base colour
             if cell == DEPOT:
                 colour = COL_DEPOT
             elif cell in (SHELF, ITEM):
@@ -314,7 +393,6 @@ def draw_grid(surface, grid, agents, metrics, font_small):
 
             pygame.draw.rect(surface, colour, rect, border_radius=3)
 
-            # Item dot
             if cell == ITEM:
                 dot_size = CELL_SIZE // 5
                 dot_rect = pygame.Rect(
@@ -324,7 +402,6 @@ def draw_grid(surface, grid, agents, metrics, font_small):
                 )
                 pygame.draw.rect(surface, COL_ITEM_DOT, dot_rect, border_radius=2)
 
-            # Shelf reference label
             if CELL_SIZE >= 18 and cell in (SHELF, ITEM):
                 label = grid.shelf_labels.get((r, c), "")
                 if label:
@@ -334,36 +411,35 @@ def draw_grid(surface, grid, agents, metrics, font_small):
                         lbl_rect.y = rect.y + 3
                     surface.blit(lbl_surf, lbl_rect)
 
-            # Target rings and path dots for each agent
             dot_r = CELL_SIZE // 8
             cx, cy = rect.center
-            for i, agent in enumerate(agents):
-                if not agent.is_done() and pos == agent.target:
-                    pygame.draw.rect(surface, target_colour(agent.agent_id), rect, width=2, border_radius=3)
-                if pos in upcoming[i] and pos != agent.pos and not agent.is_done():
-                    pygame.draw.circle(surface, path_colour(agent.agent_id), (cx, cy), dot_r)
+            for i in range(agent.n):
+                agent_id = i + 1
+                pos_i    = (int(agent.pos_row[i]), int(agent.pos_col[i]))
+                if not agent.is_done(i) and pos == agent.targets[i]:
+                    pygame.draw.rect(surface, target_colour(agent_id), rect, width=2, border_radius=3)
+                if pos in upcoming[i] and pos != pos_i and not agent.is_done(i):
+                    pygame.draw.circle(surface, path_colour(agent_id), (cx, cy), dot_r)
 
-            # Conflict flash
             if metrics.flash_timer > 0 and pos == metrics.conflict_cell:
                 pygame.draw.rect(surface, COL_CONFLICT, rect, width=3, border_radius=3)
 
     # Draw agents on top
-    for agent in agents:
-        if not agent.is_done():
-            r = cell_rect(*agent.pos)
-            col_fill = agent_colour(agent.agent_id)
-            if agent.state == "resting":
+    for i in range(agent.n):
+        if not agent.is_done(i):
+            r        = cell_rect(int(agent.pos_row[i]), int(agent.pos_col[i]))
+            col_fill = agent_colour(i + 1)
+            if agent.state[i] == STATE_RESTING:
                 pygame.draw.circle(surface, COL_RESTING, r.center,
                                    CELL_SIZE // 2 - 2, width=3)
-            elif agent.state == "picking_up":
-                pygame.draw.circle(surface, fatigue_colour(agent.fatigue),
+            elif agent.state[i] == STATE_PICKING:
+                pygame.draw.circle(surface, fatigue_colour(float(agent.fatigue[i])),
                                    r.center, CELL_SIZE // 2 - 2, width=3)
             pygame.draw.circle(surface, col_fill, r.center, CELL_SIZE // 2 - 4)
-            # Small white dot in centre
             pygame.draw.circle(surface, COL_WHITE, r.center, CELL_SIZE // 8)
 
 
-def draw_panel(surface, grid, agents, metrics, font_big, font_med, font_small, kpi_results=None):
+def draw_panel(surface, grid, agent, metrics, font_big, font_med, font_small, kpi_results=None):
     """Right-side info panel with agent status, fatigue bars, KPI results."""
     panel_x = grid.cols * (CELL_SIZE + MARGIN) + MARGIN
     pygame.draw.rect(surface, COL_PANEL,
@@ -378,16 +454,17 @@ def draw_panel(surface, grid, agents, metrics, font_big, font_med, font_small, k
 
     surface.blit(font_big.render("WAREHOUSE SIM", True, COL_DEPOT_LABEL), (x, y))
     y += 28
-    surface.blit(font_small.render(f"{len(agents)} agents | jobs: N({JOBS_MEAN}, {JOBS_STD})", True, COL_MUTED), (x, y))
+    surface.blit(font_small.render(f"{agent.n} agents | NHPP λ={LAMBDA_BASE:.4f} β={DEMAND_BETA}", True, COL_MUTED), (x, y))
     y += 22
 
+    # State integer → display string
     state_label = {
-        "waiting":    "Starting...",
-        "to_item":    "Heading to item",
-        "picking_up": "Picking up item",
-        "to_depot":   "Returning to depot",
-        "resting":    "Resting at depot",
-        "all_done":   "Shift complete!",
+        STATE_WAITING:  "Starting...",
+        STATE_TO_ITEM:  "Heading to item",
+        STATE_PICKING:  "Picking up item",
+        STATE_TO_DEPOT: "Returning to depot",
+        STATE_RESTING:  "Resting at depot",
+        STATE_ALL_DONE: "Shift complete!",
     }
 
     def divider():
@@ -395,33 +472,31 @@ def draw_panel(surface, grid, agents, metrics, font_big, font_med, font_small, k
         pygame.draw.line(surface, (40, 50, 65), (x, y), (divider_end, y))
         y += 8
 
-    for agent in agents:
+    for i in range(agent.n):
+        agent_id  = i + 1
         divider()
-        col_agent = agent_colour(agent.agent_id)
-        exp_label = "Experienced" if agent.experience_B >= 100 else "Novice"
+        col_agent = agent_colour(agent_id)
+        exp_label = "Experienced" if agent.experience_B[i] >= 100 else "Novice"
 
         surface.blit(font_small.render(
-            f"AGENT {agent.agent_id}  [{exp_label}]",
+            f"AGENT {agent_id}  [{exp_label}]",
             True, col_agent), (x, y));  y += 16
 
-        status = state_label.get(agent.state, agent.state)
-        col    = COL_DONE if agent.is_done() else COL_WHITE
+        status = state_label.get(int(agent.state[i]), "unknown")
+        col    = COL_DONE if agent.is_done(i) else COL_WHITE
         surface.blit(font_med.render(status, True, col), (x, y));  y += 20
 
         surface.blit(font_small.render(
-            f"Orders: {agent.orders_completed}/{agent.total_orders}"
-            f"   Dist: {agent.distance}",
-            True, COL_MUTED), (x, y));  y += 16
-        surface.blit(font_small.render(
-            f"Blocked: {agent.blocked_count}x  ({agent.blocked_count * BLOCKED_WAIT_TICKS}s)",
+            f"Done: {agent.orders_completed[i]}  "
+            f"Arrived: {agent.total_orders}  Dist: {agent.distance[i]}",
             True, COL_MUTED), (x, y));  y += 16
 
-        if agent.state == "picking_up":
+        if agent.state[i] == STATE_PICKING:
             surface.blit(font_small.render(
-                f"Pickup ticks left: {agent.pickup_ticks_remaining}",
+                f"Pickup ticks left: {agent.pickup_ticks[i]}",
                 True, COL_ITEM_DOT), (x, y));  y += 14
 
-        y = draw_fatigue_bar(surface, x, y, bar_width, agent.fatigue, font_small)
+        y = draw_fatigue_bar(surface, x, y, bar_width, float(agent.fatigue[i]), font_small)
         y += 4
 
     # Congestion
@@ -432,14 +507,13 @@ def draw_panel(surface, grid, agents, metrics, font_big, font_med, font_small, k
     surface.blit(font_small.render("cell conflict steps", True, COL_MUTED), (x, y)); y += 20
 
     # Simulation complete summary
-    all_done = all(a.is_done() for a in agents)
-    if all_done:
+    if agent.all_done():
         divider()
         surface.blit(font_med.render("Simulation complete!", True, COL_DONE), (x, y)); y += 20
-        for agent in agents:
+        for i in range(agent.n):
             surface.blit(font_small.render(
-                f"A{agent.agent_id}: {agent.distance} cells | fat={agent.fatigue:.2f}",
-                True, agent_colour(agent.agent_id)), (x, y)); y += 14
+                f"A{i+1}: {agent.distance[i]} cells | fat={agent.fatigue[i]:.2f}",
+                True, agent_colour(i + 1)), (x, y)); y += 14
         surface.blit(font_small.render(
             f"Conflicts: {metrics.cell_conflicts}",
             True, COL_CONFLICT), (x, y)); y += 14
@@ -458,10 +532,9 @@ def draw_panel(surface, grid, agents, metrics, font_big, font_med, font_small, k
             f"Dist/agent      : {kpi_results['dist_per_agent']:.1f} cells",
             True, kpi_col), (x, y)); y += 20
         surface.blit(font_med.render(
-            f"Congestion rate : {kpi_results['congestion_rate']:.4f}",
+            f"Congestion rate : {kpi_results['congestion_rate']:.2f}%",
             True, kpi_col), (x, y)); y += 20
 
-    # Legend
     legend_y = surface.get_height() - 100
     if legend_y > y + 10:
         pygame.draw.line(surface, (40, 50, 65), (x, legend_y), (divider_end, legend_y))
@@ -481,46 +554,49 @@ def draw_panel(surface, grid, agents, metrics, font_big, font_med, font_small, k
 
 
 # =============================================================================
-# RIGHT-OF-WAY RESOLUTION (generalised for N agents)
+# CONFLICT RESOLUTION
 # =============================================================================
 
-def resolve_right_of_way(agents):
+def resolve_conflicts(agent):
     """
-    For every pair of agents: if they are heading to the same cell or about
-    to swap positions head-on, block the lower-priority agent.
+    Detect agents that physically share the same non-depot cell after moving,
+    and block the lower-priority one for BLOCKED_WAIT_TICKS ticks.
+
+    This models human workers who react when they actually meet in an aisle —
+    one steps aside and waits for the other to pass.  No look-ahead or path
+    knowledge is used, matching how a real human would behave.
 
     Priority (highest first):
-      1. State: to_depot (loaded, returning) beats to_item (going to pick up)
-      2. Tiebreaker: lower agent_id beats higher
+      1. State: to_depot (carrying item, returning) beats to_item (going to pick)
+      2. Tiebreaker: lower agent index beats higher
+
+    Called AFTER agent.step() so positions reflect where agents actually moved.
     """
-    active = [a for a in agents if not a.is_done()]
+    active = [i for i in range(agent.n) if not agent.is_done(i)]
 
-    def priority(agent):
-        state_score = 1 if agent.state == "to_depot" else 0
-        id_score    = -agent.agent_id   # lower id = higher priority
-        return (state_score, id_score)
+    def priority(i):
+        state_score = 1 if agent.state[i] == STATE_TO_DEPOT else 0
+        return (state_score, random.random())
 
-    for a1, a2 in itertools.combinations(active, 2):
-        next1 = a1.peek_next_pos()
-        next2 = a2.peek_next_pos()
-        if next1 is None or next2 is None:
+    # Build a map of cell → list of agents currently on it
+    pos_map = {}
+    for i in active:
+        pos = (int(agent.pos_row[i]), int(agent.pos_col[i]))
+        pos_map.setdefault(pos, []).append(i)
+
+    for pos, occupants in pos_map.items():
+        if len(occupants) < 2:
             continue
+        if pos == tuple(agent.grid.depot):
+            continue   # depot is a shared waiting area — no conflict
 
-        same_dest = (next1 == next2)
-        head_on   = (next1 == a2.pos and next2 == a1.pos)
-        if not (same_dest or head_on):
-            continue
-
-        if priority(a1) >= priority(a2):
-            loser = a2
-            winner_id = a1.agent_id
-        else:
-            loser = a1
-            winner_id = a2.agent_id
-
-        if loser.blocked_ticks_remaining == 0:
-            loser.blocked_count += 1
-        loser.blocked_ticks_remaining = BLOCKED_WAIT_TICKS
+        # Highest priority agent passes through; all others wait
+        winner = max(occupants, key=priority)
+        for loser in occupants:
+            if loser == winner:
+                continue
+            agent.blocked_ticks[loser]  = BLOCKED_WAIT_TICKS
+            agent.blocked_events[loser] += 1
 
 
 # =============================================================================
@@ -528,22 +604,16 @@ def resolve_right_of_way(agents):
 # =============================================================================
 
 def run_visual(args, demo_mode=False, kpi_results=None, replay_seed=None):
-    """Run one simulation with the Pygame window.
-    demo_mode=True and kpi_results provided when called from run_experiment.
-    replay_seed: if set, seeds random before building the run so it exactly
-                 reproduces the most representative run from the experiment.
-    """
+    """Run one simulation with the Pygame window."""
     global CELL_SIZE
     CELL_SIZE = args.cell_size
 
-    # Reproduce the representative run's stochastic choices (quota draw,
-    # worker types, fatigue rolls) by re-seeding before constructing anything.
     if replay_seed is not None:
         random.seed(replay_seed)
 
     pygame.init()
 
-    grid   = Grid(
+    grid = Grid(
         rows=args.rows, cols=args.cols,
         aisle_width=args.aisle_width,
         centre_aisle_width=args.centre_aisle,
@@ -552,16 +622,11 @@ def run_visual(args, demo_mode=False, kpi_results=None, replay_seed=None):
         shelf_start_row=args.shelf_start,
         shelf_end_row=args.shelf_end,
         cross_aisle_row=args.cross_aisle_row,
+        replenish_delay=args.replenish_delay,
     )
 
-    # Draw ONE job quota shared by all agents this run
-    quota = draw_job_quota()
-
-    # Build N agents — colours cycle from the palette
-    agents = [
-        Agent(grid, agent_id=i + 1, color=agent_colour(i + 1), total_orders=quota)
-        for i in range(args.agents)
-    ]
+    # ONE Agent object manages all args.agents workers simultaneously.
+    agent = Agent(args.agents, grid, quota=0)
 
     print("=" * 55)
     if demo_mode and replay_seed is not None:
@@ -577,23 +642,23 @@ def run_visual(args, demo_mode=False, kpi_results=None, replay_seed=None):
     print(f"  Aisle width  : {grid.aisle_width}  |  Centre aisle: {grid.centre_aisle_width}")
     print(f"  Depot        : row {grid.depot[0]}, col {grid.depot[1]}")
     print(f"  Shelf zone   : rows {grid.shelf_start_row} to {grid.shelf_end_row}")
-    print(f"  Job quota    : drawn from N({JOBS_MEAN}, {JOBS_STD})  [placeholder]")
-    print(f"  Agents       : {len(agents)}")
-    for agent in agents:
-        exp_label = "Experienced" if agent.experience_B >= 100 else "Novice"
-        print(f"    Agent {agent.agent_id} : {exp_label} (B={agent.experience_B:.0f}h)")
+    print(f"  NHPP demand  : λ_base={LAMBDA_BASE}, β={DEMAND_BETA}, shift={SHIFT_TICKS} ticks")
+    print(f"  Agents       : {agent.n}")
+    for i in range(agent.n):
+        exp_label = "Experienced" if agent.experience_B[i] >= 100 else "Novice"
+        print(f"    Agent {i+1} : {exp_label} (B={agent.experience_B[i]:.0f}h)")
     print(f"  Step delay   : {args.speed}s")
     print("=" * 55)
 
     grid_px_w = grid.cols * (CELL_SIZE + MARGIN) + MARGIN
     grid_px_h = grid.rows * (CELL_SIZE + MARGIN) + MARGIN
     win_w     = grid_px_w + PANEL_WIDTH
-    win_h     = max(grid_px_h, 400 + len(agents) * 90)
+    win_h     = max(grid_px_h, 400 + agent.n * 90)
 
     screen = pygame.display.set_mode((win_w, win_h))
     pygame.display.set_caption(
         ("DEMO RUN | " if demo_mode else "") +
-        f"Warehouse Sim — {grid.rows}x{grid.cols} — {len(agents)} agents — quota={quota}"
+        f"Warehouse Sim — {grid.rows}x{grid.cols} — {agent.n} agents — NHPP λ={LAMBDA_BASE}"
     )
 
     font_big   = pygame.font.SysFont("monospace", 18, bold=True)
@@ -604,6 +669,7 @@ def run_visual(args, demo_mode=False, kpi_results=None, replay_seed=None):
     clock          = pygame.time.Clock()
     metrics        = MetricsTracker()
     last_step_time = time.time()
+    sim_tick       = 0
 
     running = True
     while running:
@@ -613,24 +679,27 @@ def run_visual(args, demo_mode=False, kpi_results=None, replay_seed=None):
                 running = False
 
         now      = time.time()
-        all_done = all(a.is_done() for a in agents)
+        sim_done = (sim_tick >= SHIFT_TICKS)
 
-        if not all_done and (now - last_step_time) >= args.speed:
-            resolve_right_of_way(agents)
-            for agent in agents:
-                agent.step()
+        if not sim_done and (now - last_step_time) >= args.speed:
+            if nhpp_arrival(sim_tick):
+                agent.add_job()
+            agent.step()
+            resolve_conflicts(agent)
+            grid.tick_replenishment()
             last_step_time = now
+            sim_tick      += 1
 
-            metrics.update(agents, grid.depot)
+            metrics.update(agent, grid.depot)
 
-            if all(a.is_done() for a in agents):
-                metrics.print_summary(agents)
+            if sim_tick >= SHIFT_TICKS:
+                metrics.print_summary(agent)
 
         metrics.tick_flash()
 
         screen.fill(COL_BG)
-        draw_grid(screen, grid, agents, metrics, font_grid)
-        draw_panel(screen, grid, agents, metrics, font_big, font_med, font_small, kpi_results=kpi_results)
+        draw_grid(screen, grid, agent, metrics, font_grid)
+        draw_panel(screen, grid, agent, metrics, font_big, font_med, font_small, kpi_results=kpi_results)
         pygame.display.flip()
         clock.tick(60)
 
@@ -648,4 +717,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    

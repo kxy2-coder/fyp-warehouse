@@ -1,7 +1,16 @@
 # =============================================================================
-# agent.py 
+# agent.py — Vectorised Warehouse Workers
 # =============================================================================
-# This file defines the agent — a simulated warehouse worker.
+# This file defines the Agent class — but now ONE Agent object manages ALL
+# warehouse workers simultaneously using numpy arrays instead of a for-loop
+# over individual Agent objects.
+#
+# WHY VECTORISE?
+#   Instead of looping "for each agent, do maths", we store every agent's
+#   data in numpy arrays and do ALL agents' maths in one numpy call.
+#   Example: fatigue for 4 agents used to be 4 separate calls to math.exp.
+#   Now it is ONE call: np.exp(-FATIGUE_d * self.the ) which processes
+#   all 4 agents' work_time values in a single C-level operation.
 #
 # Human factors are modeled based on:
 #   Malpas & Relvas (2025) — "Designing a virtual warehouse operator
@@ -23,51 +32,44 @@
 #
 #   5. EXPERIENCE / LEARNING CURVE
 #      E(w, B) = M + (1 - M) * (w + B)^(-b)
-#      Agent 1 = experienced (B=1000h), all others = novice (B=20h)
+#      Each agent independently has a 35% chance of being experienced (B=1000h).
 #
-# JOB QUOTA — DISTRIBUTION-BASED:
-#   Rather than a fixed order quota, the number of jobs per simulation run
-#   is drawn from a normal distribution N(JOBS_MEAN, JOBS_STD).
-#   This means each run has a slightly different workload, reflecting
-#   realistic day-to-day demand variability in a warehouse.
+# STATE ENCODING (integers instead of strings for numpy compatibility):
+#   0 = waiting     — at depot, shift not started
+#   1 = to_item     — walking toward target item
+#   2 = picking_up  — dwelling at shelf, physically picking up item
+#   3 = to_depot    — walking back to depot
+#   4 = resting     — at depot, recovering before next order
+#   5 = all_done    — all jobs for this run complete
 #
-#   Running the simulation many times (NUM_RUNS) and averaging the results
-#   gives a robust KPI that holds across varying demand levels — this is
-#   a sensitivity analysis approach, meaning layout conclusions are not
-#   dependent on one specific demand assumption.
-#
-#   JOBS_MEAN and JOBS_STD are placeholder values for now.
-#   They will be calibrated against literature once KPIs are finalised.
-#   NUM_RUNS controls how many silent runs are averaged in --experiment mode.
-#
-# TIME COSTS PER ACTION:
-#   Walking one cell (~1 m/s)  = 1 second  = 1/3600 hours
-#   Picking one item (~10 s)   = 10/3600 hours
-#   Resting at depot (~30 s)   = 30/3600 hours
-#
-# STATES:
-#   "waiting"    — at depot, shift not started
-#   "to_item"    — walking toward target item
-#   "picking_up" — dwelling at shelf, physically picking up item
-#   "to_depot"   — walking back to depot
-#   "resting"    — at depot, recovering before next order
-#   "all_done"   — all jobs for this run complete
+# DATA LAYOUT:
+#   Every per-agent value is a 1-D numpy array of length n_agents.
+#   Index i always refers to agent i (0-indexed internally; displayed as i+1).
+#   Paths are kept as a Python list-of-lists (variable length, not numpy-able).
 # =============================================================================
 
 import math
 import random
+import numpy as np
 from pathfinder import find_path_to_neighbour, find_path
 
-# ── Job quota distribution parameters ────────────────────────────────────────
-# Each simulation run draws the number of jobs from N(JOBS_MEAN, JOBS_STD).
-# These are placeholder values — to be calibrated once KPIs are finalised.
-# Sensitivity analysis will test low / medium / high demand scenarios.
-JOBS_MEAN = 70     # placeholder mean jobs per agent per run
-JOBS_STD  = 14     # placeholder std (20% of mean — conventional assumption)
+# ── State integer constants (exported so main.py/rl_env.py can use them) ─────
+STATE_WAITING  = 0
+STATE_TO_ITEM  = 1
+STATE_PICKING  = 2
+STATE_TO_DEPOT = 3
+STATE_RESTING  = 4
+STATE_ALL_DONE = 5
+
+# ── NHPP demand model parameters ─────────────────────────────────────────────
+SHIFT_TICKS = 28800    # 8 hours at 1 tick/second
+LAMBDA_BASE = 0.0778   # base arrival rate per tick (≈ 70 picks/hr × 4 agents / 3600)
+DEMAND_BETA = 0.3      # amplitude parameter (moderate time-varying shape)
+# JOBS_MEAN = 70  (deprecated — kept for reference)
+# JOBS_STD  = 14  (deprecated — kept for reference)
 
 # ── Number of runs for the experiment mode (--experiment flag) ────────────────
-# Each layout is evaluated over NUM_RUNS independent runs and results averaged.
-NUM_RUNS = 30
+NUM_RUNS = 50
 
 # ── Real-time costs per action (in hours) ────────────────────────────────────
 WALK_TIME         = 1 / 3600       # 1 second per cell walked
@@ -87,118 +89,151 @@ FATIGUE_alpha = 0.40
 LEARNING_RATE = 0.90
 AUTOMATION_M  = 0.0
 
-# Experience levels for the two worker types (hours of prior experience).
-EXPERIENCE_NOVICE     = 20.0    # novice worker
-EXPERIENCE_EXPERT     = 1000.0  # experienced worker
-EXPERIENCE_PROB_EXPERT = 0.35   # 35% chance any agent is experienced (realistic mix)
+EXPERIENCE_NOVICE      = 20.0
+EXPERIENCE_EXPERT      = 1000.0
+EXPERIENCE_PROB_EXPERT = 0.35
 
-# Legacy dict kept for any direct references — not used for assignment any more.
+# Precompute the learning-rate exponent once (avoids repeating log/log every tick).
+# b = -log(LEARNING_RATE) / log(2)
+_LEARNING_EXPONENT = -math.log(LEARNING_RATE) / math.log(2)
+
+# Legacy dict kept for any direct references — not used for assignment.
 EXPERIENCE_B = {}
 
 
 def draw_experience():
-    """
-    Randomly assign prior experience for one agent.
-    Each agent independently has a 35% chance of being experienced.
-    This produces a realistic mixed workforce across runs.
-    """
-    import random
+    """Randomly assign prior experience hours for one agent."""
     return EXPERIENCE_EXPERT if random.random() < EXPERIENCE_PROB_EXPERT else EXPERIENCE_NOVICE
 
 
-def draw_job_quota():
-    """
-    Draw the number of jobs for one simulation run from N(JOBS_MEAN, JOBS_STD).
-    Clamped to a minimum of 1 to avoid zero or negative quotas.
-    """
-    n = random.gauss(JOBS_MEAN, JOBS_STD)
-    return max(1, round(n))
+# draw_job_quota() — deprecated; replaced by NHPP arrival model below.
 
+
+def get_multiplier(tick):
+    """Return NHPP demand multiplier m(t) for the given tick."""
+    beta     = DEMAND_BETA
+    m_peak   = 1.0 + beta * 0.4
+    m_trough = 1.0 - beta * 0.3
+    if tick < 7200:
+        return m_peak
+    elif tick < 21600:
+        return m_trough
+    else:
+        return m_peak
+
+
+def nhpp_arrival(tick):
+    """Return True if a job arrives at this tick (Bernoulli draw)."""
+    rate = LAMBDA_BASE * get_multiplier(tick)
+    return random.random() < rate
+
+
+# =============================================================================
+# Agent — manages ALL N workers simultaneously via numpy arrays
+# =============================================================================
 
 class Agent:
     """
-    A warehouse worker that completes a randomly drawn number of pickup trips.
-    The job quota is set at creation time by drawing from the distribution.
-    Behaviour is governed by fatigue and experience (Malpas & Relvas, 2025).
+    Manages ALL warehouse workers at once using numpy arrays.
+
+    Instead of creating one Agent per worker, create ONE Agent that holds
+    every worker's state in 1-D arrays of length n_agents.
+
+    Parameters
+    ----------
+    n_agents : int
+        Number of workers to simulate.
+    grid : Grid
+        The warehouse grid (used for pathfinding and item removal).
+    quota : int
+        Job quota shared by all workers in this run.
     """
 
-    def __init__(self, grid, agent_id=1, color=(60, 200, 80), total_orders=None):
-        """
-        Set up the agent at the depot, ready to start.
+    def __init__(self, n_agents, grid, quota):
+        self.n    = n_agents
+        self.grid = grid
+        self.job_queue    = 0   # jobs currently available to pick
+        self.total_orders = 0   # tracks total jobs that have arrived
 
-        grid         — the Grid object (pathfinding + item removal)
-        agent_id     — integer id, used for display and logging
-        color        — RGB tuple for drawing this agent on screen
-        total_orders — job quota for this run. If None, draws from distribution.
-                       Pass an explicit value to give all agents the same quota
-                       within a single run (recommended).
-        """
-        self.grid     = grid
-        self.agent_id = agent_id
-        self.color    = color
+        depot = grid.depot   # (row, col) tuple
 
-        # Job quota for this run — same value passed to all agents in one run
-        self.total_orders = total_orders if total_orders is not None else draw_job_quota()
+        # ── Position arrays ───────────────────────────────────────────────
+        # All agents start at the depot.
+        self.pos_row = np.full(n_agents, depot[0], dtype=np.int32)
+        self.pos_col = np.full(n_agents, depot[1], dtype=np.int32)
 
-        self.pos   = grid.depot
-        self.state = "waiting"
+        # ── State array (integers 0-5) ─────────────────────────────────────
+        # All agents start in STATE_WAITING.
+        self.state = np.zeros(n_agents, dtype=np.int32)
 
-        self.target     = None
-        self.path       = []
-        self.path_index = 0
+        # ── Time accumulators ─────────────────────────────────────────────
+        self.work_time = np.zeros(n_agents, dtype=np.float64)
+        self.rest_time = np.zeros(n_agents, dtype=np.float64)
 
-        self.pickup_ticks_remaining = 0
+        # ── Fatigue ───────────────────────────────────────────────────────
+        self.fatigue = np.zeros(n_agents, dtype=np.float64)
 
-        # ── Real-time tracking ────────────────────────────────────────────────
-        self.work_time = 0.0
-        self.rest_time = 0.0
+        # ── Experience (hours of prior experience) ────────────────────────
+        self.experience_B = np.array(
+            [draw_experience() for _ in range(n_agents)], dtype=np.float64
+        )
 
-        # ── Fatigue ───────────────────────────────────────────────────────────
-        self.fatigue = 0.0
+        # ── Metrics ───────────────────────────────────────────────────────
+        self.distance         = np.zeros(n_agents, dtype=np.int32)
+        self.orders_completed = np.zeros(n_agents, dtype=np.int32)
+        self.blocked_events   = np.zeros(n_agents, dtype=np.int32)
+        self.idle_ticks       = np.zeros(n_agents, dtype=np.int32)
 
-        # ── Experience ───────────────────────────────────────────────────────
-        self.experience_B = draw_experience()
+        # ── Blocking ──────────────────────────────────────────────────────
+        self.blocked_ticks = np.zeros(n_agents, dtype=np.int32)
 
-        # ── Metrics ───────────────────────────────────────────────────────────
-        self.distance         = 0
-        self.orders_completed = 0
+        # ── Pickup countdown ──────────────────────────────────────────────
+        self.pickup_ticks = np.zeros(n_agents, dtype=np.int32)
 
-        # ── Blocking ──────────────────────────────────────────────────────────
-        self.blocked_ticks_remaining = 0
-        self.blocked_count           = 0
+        # ── Paths (can't be numpy — each agent has a different-length path) ─
+        # paths[i]        : list of (row, col) tuples for agent i
+        # path_indices[i] : next step index in paths[i]
+        # targets[i]      : (row, col) of current target shelf cell, or None
+        self.paths        = [[] for _ in range(n_agents)]
+        self.path_indices = np.zeros(n_agents, dtype=np.int32)
+        self.targets      = [None] * n_agents
 
     # =========================================================================
-    # Human factors
+    # Human-factors maths — all vectorised over n_agents
     # =========================================================================
 
-    def _fatigue_buildup(self):
-        return 1.0 - math.exp(-FATIGUE_d * self.work_time)
+    def _update_fatigue_all(self):
+        """
+        Recompute fatigue for every agent in one numpy call.
 
-    def _fatigue_recovery(self):
-        return math.exp(-FATIGUE_r * self.rest_time) - 1.0
-
-    def _update_fatigue(self):
-        raw = self._fatigue_buildup() + self._fatigue_recovery()
-        self.fatigue = max(0.0, min(1.0, raw))
+        Fatigue = clip(buildup + recovery, 0, 1)
+          buildup  = 1 - exp(-FATIGUE_d * work_time)   [increases with work]
+          recovery = exp(-FATIGUE_r * rest_time) - 1   [negative; reduces fatigue]
+        """
+        buildup  = 1.0 - np.exp(-FATIGUE_d * self.work_time)
+        recovery = np.exp(-FATIGUE_r * self.rest_time) - 1.0
+        self.fatigue = np.clip(buildup + recovery, 0.0, 1.0)
 
     def _experience_factor(self):
-        b = -math.log(LEARNING_RATE) / math.log(2)
+        """
+        Compute E(w, B) = M + (1-M) * (w + B)^(-b) for all agents at once.
+        Returns a 1-D array of length n_agents.
+        """
         w_total = self.work_time + self.experience_B
-        if w_total <= 0:
-            w_total = 0.001
-        return AUTOMATION_M + (1.0 - AUTOMATION_M) * (w_total ** -b)
+        w_total = np.maximum(w_total, 0.001)   # guard against zero
+        return AUTOMATION_M + (1.0 - AUTOMATION_M) * np.power(w_total, -_LEARNING_EXPONENT)
 
-    def _adjusted_pickup_ticks(self):
+    def _calc_pickup_ticks_all(self):
+        """
+        Da = (1 + alpha * F) * E(w,B) * base_ticks  for all agents.
+        Returns an int32 array (minimum 1 tick per agent).
+        """
         E  = self._experience_factor()
         Da = (1.0 + FATIGUE_alpha * self.fatigue) * E * PICKUP_BASE_TICKS
-        return max(1, round(Da))
-
-    def _should_pause_walk(self):
-        pause_probability = FATIGUE_alpha * self.fatigue / 2.0
-        return random.random() < pause_probability
+        return np.maximum(1, np.round(Da).astype(np.int32))
 
     # =========================================================================
-    # Private navigation helpers
+    # Navigation helpers — still per-agent (paths differ)
     # =========================================================================
 
     def _pick_next_item(self):
@@ -207,109 +242,167 @@ class Agent:
             return None
         return random.choice(available)
 
-    def _plan_path_to_item(self):
-        self.path       = find_path_to_neighbour(self.grid, self.pos, self.target)
-        self.path_index = 0
-        self.state      = "to_item"
+    def _plan_path_to_item(self, i):
+        pos = (int(self.pos_row[i]), int(self.pos_col[i]))
+        self.paths[i]        = find_path_to_neighbour(self.grid, pos, self.targets[i])
+        self.path_indices[i] = 0
+        self.state[i]        = STATE_TO_ITEM
 
-    def _plan_path_to_depot(self):
-        self.path       = find_path(self.grid, self.pos, self.grid.depot)
-        self.path_index = 0
-        self.state      = "to_depot"
+    def _plan_path_to_depot(self, i):
+        pos = (int(self.pos_row[i]), int(self.pos_col[i]))
+        self.paths[i]        = find_path(self.grid, pos, self.grid.depot)
+        self.path_indices[i] = 0
+        self.state[i]        = STATE_TO_DEPOT
 
     # =========================================================================
     # Public interface
     # =========================================================================
 
-    def peek_next_pos(self):
-        if self.blocked_ticks_remaining > 0:
+    def peek_next_pos(self, i):
+        """Return the next cell agent i intends to move to, or None."""
+        if self.blocked_ticks[i] > 0:
             return None
-        if self.state in ("to_item", "to_depot") and self.path_index < len(self.path):
-            return self.path[self.path_index]
+        if self.state[i] in (STATE_TO_ITEM, STATE_TO_DEPOT):
+            if self.path_indices[i] < len(self.paths[i]):
+                return self.paths[i][self.path_indices[i]]
         return None
 
+    def is_done(self, i):
+        """Return True if agent i has finished all its jobs."""
+        return bool(self.state[i] == STATE_ALL_DONE)
+
+    def all_done(self):
+        """Return True when every agent has finished (fallback safety check)."""
+        return bool(np.all(self.state == STATE_ALL_DONE))
+
+    def add_job(self):
+        """Add one job to the queue (called by simulation loop each tick)."""
+        self.job_queue    += 1
+        self.total_orders += 1
+
+    # =========================================================================
+    # step() — advance ALL agents by one simulation tick
+    # =========================================================================
+
     def step(self):
-        """Advance the agent by one simulation tick."""
+        """
+        Advance every agent by one tick using vectorised numpy operations.
 
-        # ── Waiting: start first order ────────────────────────────────────────
-        if self.state == "waiting":
-            self.target = self._pick_next_item()
-            if self.target:
-                self._plan_path_to_item()
+        IMPORTANT — state masks are captured at the START of the tick.
+        This means a transition that happens mid-tick (e.g. to_item → picking_up)
+        does not cause double-processing within the same tick.  This exactly
+        matches the original single-agent step() behaviour.
+
+        Rough order of operations:
+          1. Waiting agents pick a target and start walking (small loop).
+          2. Walking agents (blocked / pausing / moving) — vectorised + small loop.
+          3. Picking agents count down; deplete item when done (small loop).
+          4. Resting agents accumulate rest time; pick next job (small loop).
+          5. Fatigue updated for ALL agents in one numpy call.
+        """
+
+        # ── Snapshot state masks at tick start ────────────────────────────────
+        # Using pre-computed masks ensures that state transitions made below
+        # don't accidentally trigger a second state's logic in the same tick.
+        waiting   = self.state == STATE_WAITING
+        to_item   = self.state == STATE_TO_ITEM
+        picking   = self.state == STATE_PICKING
+        to_depot  = self.state == STATE_TO_DEPOT
+        resting   = self.state == STATE_RESTING
+
+        # ── 1. Waiting → start first order once a job is available ──────────
+        self.idle_ticks[waiting] += 1
+        waiting_indices = sorted(np.where(waiting)[0],
+                                 key=lambda i: self.idle_ticks[i], reverse=True)
+        for i in waiting_indices:
+            if self.job_queue > 0:
+                target = self._pick_next_item()
+                if target:
+                    self.job_queue -= 1
+                    self.targets[i] = target
+                    self._plan_path_to_item(i)
+                # else: shelves depleted — stay waiting until replenished
+            # else: no jobs dispatched yet — stay waiting
+
+        # ── 2. Walking (to_item or to_depot) ─────────────────────────────────
+        walking = to_item | to_depot
+
+        # Identify blocked agents BEFORE decrementing (so not_blocked is correct).
+        blocked     = walking & (self.blocked_ticks > 0)
+        not_blocked = walking & ~blocked
+
+        # Blocked: serve out wait, add work time.
+        self.blocked_ticks[blocked] -= 1
+        self.work_time[blocked]     += WALK_TIME
+
+        # Not blocked: roll for fatigue-induced pause.
+        # pause_probability = alpha * F / 2
+        # We use Python's random.random() (same as original) so that the RNG
+        # stream is identical to the non-vectorised version for the same seed.
+        # Only non-blocked walking agents consume a random number — matching the
+        # original call count exactly.
+        pausing = np.zeros(self.n, dtype=bool)
+        for i in np.where(not_blocked)[0]:
+            if random.random() < FATIGUE_alpha * self.fatigue[i] / 2.0:
+                pausing[i] = True
+        self.work_time[pausing] += WALK_TIME
+
+        # Moving: not blocked AND not pausing.
+        moving = not_blocked & ~pausing
+
+        # Pre-compute pickup ticks once for the whole tick.
+        # (Only used for agents that reach their item shelf this tick.)
+        pickup_ticks_arr = self._calc_pickup_ticks_all()
+
+        for i in np.where(moving)[0]:
+            if self.path_indices[i] < len(self.paths[i]):
+                # Take next step along path.
+                pos = self.paths[i][self.path_indices[i]]
+                self.pos_row[i]      = pos[0]
+                self.pos_col[i]      = pos[1]
+                self.path_indices[i] += 1
+                self.distance[i]    += 1
+                self.work_time[i]   += WALK_TIME
             else:
-                self.state = "all_done"
-            return
+                # Reached end of path — transition state.
+                if to_item[i]:   # was STATE_TO_ITEM at tick start
+                    self.pickup_ticks[i] = pickup_ticks_arr[i]
+                    self.state[i]        = STATE_PICKING
+                else:            # was STATE_TO_DEPOT
+                    self.state[i] = STATE_RESTING
 
-        # ── Walking toward item ───────────────────────────────────────────────
-        if self.state == "to_item":
-            if self.blocked_ticks_remaining > 0:
-                self.blocked_ticks_remaining -= 1
-                self.work_time += WALK_TIME
-                self._update_fatigue()
-                return
+        # ── 3. Picking up ─────────────────────────────────────────────────────
+        # Decrement counters and add time for all currently-picking agents.
+        self.pickup_ticks[picking] -= 1
+        self.work_time[picking]    += PICKUP_BASE_TIME
 
-            if self._should_pause_walk():
-                self.work_time += WALK_TIME
-                self._update_fatigue()
-                return
+        # Agents that finished picking this tick.
+        finished_picking = picking & (self.pickup_ticks <= 0)
+        for i in np.where(finished_picking)[0]:
+            self.grid.deplete_item(*self.targets[i])
+            self.orders_completed[i] += 1
+            self._plan_path_to_depot(i)
 
-            if self.path_index < len(self.path):
-                self.pos         = self.path[self.path_index]
-                self.path_index += 1
-                self.distance   += 1
-                self.work_time  += WALK_TIME
-                self._update_fatigue()
+        # ── 4. Resting at depot ────────────────────────────────────────────
+        self.rest_time[resting]  += DROPOFF_TIME
+        self.idle_ticks[resting] += 1
+
+        # Agents needing next job only if queue has jobs available.
+        # Do NOT transition to STATE_ALL_DONE here — shift end is tick-based.
+        queue_available = resting & (self.job_queue > 0)
+
+        resting_indices = sorted(np.where(queue_available)[0],
+                                 key=lambda i: self.idle_ticks[i], reverse=True)
+        for i in resting_indices:
+            if self.job_queue <= 0:
+                break   # queue exhausted by earlier agents this tick
+            target = self._pick_next_item()
+            if target:
+                self.job_queue -= 1
+                self.targets[i] = target
+                self._plan_path_to_item(i)
             else:
-                self.pickup_ticks_remaining = self._adjusted_pickup_ticks()
-                self.state = "picking_up"
+                pass    # shelf depleted — stay resting until replenished
 
-        # ── Picking up item ───────────────────────────────────────────────────
-        elif self.state == "picking_up":
-            self.pickup_ticks_remaining -= 1
-            self.work_time += PICKUP_BASE_TIME
-            self._update_fatigue()
-
-            if self.pickup_ticks_remaining <= 0:
-                self.grid.remove_item(*self.target)
-                self.orders_completed += 1
-                self._plan_path_to_depot()
-
-        # ── Walking back to depot ─────────────────────────────────────────────
-        elif self.state == "to_depot":
-            if self.blocked_ticks_remaining > 0:
-                self.blocked_ticks_remaining -= 1
-                self.work_time += WALK_TIME
-                self._update_fatigue()
-                return
-
-            if self._should_pause_walk():
-                self.work_time += WALK_TIME
-                self._update_fatigue()
-                return
-
-            if self.path_index < len(self.path):
-                self.pos         = self.path[self.path_index]
-                self.path_index += 1
-                self.distance   += 1
-                self.work_time  += WALK_TIME
-                self._update_fatigue()
-            else:
-                self.state = "resting"
-
-        # ── Resting at depot ──────────────────────────────────────────────────
-        elif self.state == "resting":
-            self.rest_time += DROPOFF_TIME
-            self._update_fatigue()
-
-            if self.orders_completed >= self.total_orders:
-                self.state = "all_done"
-            else:
-                self.target = self._pick_next_item()
-                if self.target:
-                    self._plan_path_to_item()
-                else:
-                    self.state = "all_done"
-
-    def is_done(self):
-        """Returns True when the agent has completed all jobs for this run."""
-        return self.state == "all_done"
+        # ── 5. Update fatigue for every agent in one numpy call ───────────────
+        self._update_fatigue_all()

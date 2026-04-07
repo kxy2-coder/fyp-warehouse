@@ -2,15 +2,52 @@
 # metrics.py — Simulation Metrics
 # =============================================================================
 # Owns ALL metric state and logic for the warehouse simulation.
-# Works with any number of agents (N agents).
+# Works with the vectorised Agent class (one object managing all workers).
 #
 # Current metrics:
 #   - cell_conflicts : ticks where two or more agents share the same non-depot cell
+#   - spatial_log    : (tick, row, col) of every blocking event for heatmaps
 # =============================================================================
 
+import csv
+import numpy as np
 from agent import BLOCKED_WAIT_TICKS
 
 FLASH_FRAMES = 12   # how many display frames the red conflict highlight lasts
+
+
+class TraceLogger:
+    """
+    Records per-agent performance snapshots at fixed tick intervals.
+    Call snapshot() every bin_size ticks; call save_csv() at run end.
+    """
+
+    def __init__(self, n_agents, bin_size=600):
+        self.n_agents = n_agents
+        self.bin_size = bin_size
+        self.records  = []
+
+    def snapshot(self, tick, agent):
+        """Record one dict per agent at this tick."""
+        for i in range(self.n_agents):
+            self.records.append({
+                "tick":           tick,
+                "agent_id":       i + 1,
+                "picks":          int(agent.orders_completed[i]),
+                "distance":       int(agent.distance[i]),
+                "idle_ticks":     int(agent.idle_ticks[i]),
+                "blocked_events": int(agent.blocked_events[i]),
+                "fatigue":        round(float(agent.fatigue[i]), 4),
+            })
+
+    def save_csv(self, filename):
+        """Write all recorded snapshots to a CSV file."""
+        if not self.records:
+            return
+        with open(filename, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=self.records[0].keys())
+            writer.writeheader()
+            writer.writerows(self.records)
 
 
 class MetricsTracker:
@@ -23,33 +60,36 @@ class MetricsTracker:
         self.cell_conflicts = 0
         self.conflict_cell  = None
         self.flash_timer    = 0
+        self.spatial_log    = []   # list of (tick, row, col) per blocking event
 
     # -------------------------------------------------------------------------
 
-    def update(self, agents, depot):
+    def update(self, agent, depot, tick=None):
         """
         Check all metric conditions and update counters.
         Call after all agents have stepped each tick.
 
-        agents — list of Agent objects
-        depot  — (row, col) of the depot cell
+        agent — vectorised Agent object (manages all workers)
+        depot — (row, col) of the depot cell
+        tick  — current simulation tick (used for spatial logging)
         """
-        self._check_cell_conflict(agents, depot)
+        self._check_cell_conflict(agent, depot, tick)
 
-    def _check_cell_conflict(self, agents, depot):
+    def _check_cell_conflict(self, agent, depot, tick=None):
         """Detect and record cell-sharing conflicts (depot excluded)."""
-        active = [a for a in agents if not a.is_done()]
-        # Build a dict: position -> list of agents there
         pos_map = {}
-        for agent in active:
-            pos_map.setdefault(agent.pos, []).append(agent)
+        for i in range(agent.n):
+            if not agent.is_done(i):
+                pos = (int(agent.pos_row[i]), int(agent.pos_col[i]))
+                pos_map.setdefault(pos, []).append(i)
 
         for pos, occupants in pos_map.items():
             if len(occupants) >= 2 and pos != depot:
                 self.cell_conflicts += 1
                 self.conflict_cell   = pos
                 self.flash_timer     = FLASH_FRAMES
-                break   # count once per tick even if multiple conflicts
+                if tick is not None:
+                    self.spatial_log.append((tick, pos[0], pos[1]))
 
     # -------------------------------------------------------------------------
 
@@ -60,36 +100,68 @@ class MetricsTracker:
 
     # -------------------------------------------------------------------------
 
-    def print_step(self, agents):
+    def print_step(self, agent):
         """Print a one-line terminal summary per simulation tick."""
+        state_names = {
+            0: "waiting",
+            1: "to_item",
+            2: "picking_up",
+            3: "to_depot",
+            4: "resting",
+            5: "all_done",
+        }
         parts = []
-        for agent in agents:
+        for i in range(agent.n):
             parts.append(
-                f"A{agent.agent_id}[{agent.orders_completed:2d}/{agent.total_orders}]"
-                f" {agent.state:12s} fat={agent.fatigue:.2f}"
+                f"A{i+1}[{agent.orders_completed[i]:2d}/{agent.total_orders}]"
+                f" {state_names[int(agent.state[i])]:12s} fat={agent.fatigue[i]:.2f}"
             )
         print("  " + " | ".join(parts) + f" | conflicts={self.cell_conflicts}")
 
-    def print_summary(self, agents):
+    def print_summary(self, agent):
         """Print final results when all agents finish."""
         print("=" * 55)
         print("  SIMULATION COMPLETE")
-        for agent in agents:
-            exp_label = "Experienced" if agent.experience_B >= 100 else "Novice"
-            print(f"  Agent {agent.agent_id} ({exp_label}) :")
-            print(f"    Distance     : {agent.distance} cells")
-            print(f"    Work time    : {agent.work_time:.4f} hrs")
-            print(f"    Final fatigue: {agent.fatigue:.3f}")
-            print(f"    Blocked      : {agent.blocked_count}x ({agent.blocked_count * BLOCKED_WAIT_TICKS}s waited)")
-        print(f"  Cell conflicts : {self.cell_conflicts}")
+        print(f"  Jobs arrived: {agent.total_orders}  |  "
+              f"Jobs completed: {int(agent.orders_completed.sum())}")
+        for i in range(agent.n):
+            exp_label = "Experienced" if agent.experience_B[i] >= 100 else "Novice"
+            print(f"  Agent {i+1} ({exp_label}) :")
+            print(f"    Distance     : {agent.distance[i]} cells")
+            print(f"    Work time    : {agent.work_time[i]:.4f} hrs")
+            print(f"    Final fatigue: {agent.fatigue[i]:.3f}")
+        print(f"  Total collisions : {self.cell_conflicts} "
+              f"(each loser waited {BLOCKED_WAIT_TICKS}s)")
         print("=" * 55)
-    def collect_raw(self, agents):
+
+    def get_heatmap(self, grid_rows, grid_cols):
+        """Return a 2D numpy array (grid_rows × grid_cols) with conflict counts."""
+        heatmap = np.zeros((grid_rows, grid_cols), dtype=np.int32)
+        for _, row, col in self.spatial_log:
+            if 0 <= row < grid_rows and 0 <= col < grid_cols:
+                heatmap[row, col] += 1
+        return heatmap
+
+    def save_spatial_csv(self, filename, grid_rows, grid_cols):
+        """
+        Write aggregated (row, col, count) to CSV.
+        Only cells with at least one conflict are written.
+        """
+        heatmap = self.get_heatmap(grid_rows, grid_cols)
+        with open(filename, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["row", "col", "count"])
+            for r in range(grid_rows):
+                for c in range(grid_cols):
+                    if heatmap[r, c] > 0:
+                        writer.writerow([r, c, int(heatmap[r, c])])
+
+    def collect_raw(self, agent):
         return {
             "cell_conflicts":    self.cell_conflicts,
-            "total_distance":    sum(a.distance for a in agents),
-            "total_work_time":   sum(a.work_time for a in agents),
-            "total_orders":      sum(a.orders_completed for a in agents),
-            "total_blocked":     sum(a.blocked_count for a in agents),
-            "avg_final_fatigue": sum(a.fatigue for a in agents) / len(agents),
-            "job_quota":         agents[0].total_orders,
+            "total_distance":    int(agent.distance.sum()),
+            "total_work_time":   float(agent.work_time.sum()),
+            "jobs_arrived":      int(agent.total_orders),
+            "jobs_completed":    int(agent.orders_completed.sum()),
+            "avg_final_fatigue": float(agent.fatigue.mean()),
         }
