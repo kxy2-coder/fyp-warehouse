@@ -6,13 +6,10 @@ Layout design for logistics facilities to maximise operational throughput using 
 
 ## Overview
 
-<<<<<<< HEAD
-This project simulates a warehouse operated by multiple human agents and uses a Reinforcement Learning (RL) model to find the layout configuration that maximises performance. 
-=======
-This project simulates a warehouse operated by multiple human agents and uses a Reinforcement Learning (RL) model to find the layout configuration that maximises throughput.
->>>>>>> e5ec011 (add spatial congestion logging and per-agent performance trace)
 
-Job arrivals follow a **Nonhomogeneous Poisson Process (NHPP)** with time-varying demand (morning peak, mid-shift lull, end-of-shift rush). Conflicts between agents are resolved reactively (post-movement collision detection), matching how human workers actually behave. The RL agent (PPO) explores different warehouse layouts by adjusting six layout parameters and is rewarded based on three KPIs: picks per hour, travel distance, and congestion rate.
+This project simulates a warehouse operated by multiple human agents and uses a Reinforcement Learning (RL) model to find the layout configuration that maximises throughput.
+
+Job arrivals follow a Nonhomogeneous Poisson Process (NHPP) with time-varying demand (morning peak, mid-shift lull, end-of-shift rush). Conflicts between agents are resolved reactively (post-movement collision detection), matching how human workers actually behave. The RL agent (PPO) explores different warehouse layouts by adjusting six layout parameters and is rewarded based on three KPIs: picks per hour, travel distance, and congestion rate.
 
 ---
 
