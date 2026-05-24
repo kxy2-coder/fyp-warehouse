@@ -54,8 +54,11 @@ class Grid:
 
     def __init__(self, rows=25, cols=35, aisle_width=2,
                  centre_aisle_width=3, depot_row=None, depot_col=None,
+                 depot_cols=None,
                  shelf_start_row=None, shelf_end_row=None,
-                 cross_aisle_row=None, replenish_delay=100):
+                 cross_aisle_row=None, cross_aisle_width=2,
+                 cross_aisle_enabled=True,
+                 replenish_delay=100):
         """
         Create the warehouse grid.
 
@@ -78,6 +81,11 @@ class Grid:
                              zone (default = middle row of the shelf zone).
                              Clears the full row to walkable floor, cutting the
                              shelf zone into two halves. Pass None to disable.
+        cross_aisle_width  — how many rows the cross-aisle spans (default 2).
+                             A width of 1 (1m) is too narrow for two agents to
+                             pass — agents cannot physically pass in a 1m gap.
+                             Width of 2 gives a 2m corridor where agents can
+                             pass side-by-side without slowing each other.
         """
         # centre_aisle_width can be any positive integer (odd constraint removed)
 
@@ -94,16 +102,29 @@ class Grid:
         self.aisle_width        = aisle_width
         self.centre_aisle_width = centre_aisle_width
 
-        # Depot position — defaults to top-centre
+        # Depot position(s) — defaults to single depot at top-centre
         self.depot_row = depot_row if depot_row is not None else 0
-        self.depot_col = depot_col if depot_col is not None else cols // 2
-        self.depot     = (self.depot_row, self.depot_col)
 
-        # Shelf zone rows — defaults to full interior height
-        # shelf_start_row must be at least 1 (row 0 is always a walkway)
-        # shelf_end_row must be at most rows-2 (last row is always a walkway)
-        self.shelf_start_row = shelf_start_row if shelf_start_row is not None else 1
-        self.shelf_end_row   = shelf_end_row   if shelf_end_row   is not None else rows - 2
+        if depot_cols is not None:
+            # Multiple depot columns provided explicitly (from RL multi-depot)
+            _active_cols = list(depot_cols)
+        else:
+            # Single depot column (backward-compatible path)
+            _active_cols = [depot_col if depot_col is not None else cols // 2]
+
+        self.depots    = [(self.depot_row, c) for c in _active_cols]
+        self.depot     = self.depots[0]          # backward compat: first depot
+        self.depot_col = self.depot[1]           # backward compat: first col
+
+        # Shelf zone rows
+        # shelf_start_row=3  → 3m staging area at top  (rows 0-2 clear)
+        # shelf_end_row=rows-3 → 2m corridor at bottom (last 2 rows clear)
+        # This ensures agents can pass each other at both ends of the shelf zone.
+        self.shelf_start_row = shelf_start_row if shelf_start_row is not None else 3
+        self.shelf_end_row   = shelf_end_row   if shelf_end_row   is not None else rows - 3
+
+        # Cross-aisle width — number of rows cleared for the horizontal corridor
+        self.cross_aisle_width = max(1, cross_aisle_width)
 
         # Clamp to valid range
         self.shelf_start_row = max(1, self.shelf_start_row)
@@ -116,8 +137,11 @@ class Grid:
             )
 
         # Cross-aisle row — horizontal corridor cutting through the shelf zone.
-        # Defaults to the middle row of the shelf zone; pass None to disable.
-        if cross_aisle_row is None:
+        # cross_aisle_enabled=False disables it entirely (self.cross_aisle_row=None).
+        # When enabled and cross_aisle_row=None, defaults to middle of shelf zone.
+        if not cross_aisle_enabled:
+            self.cross_aisle_row = None
+        elif cross_aisle_row is None:
             self.cross_aisle_row = (self.shelf_start_row + self.shelf_end_row) // 2
         else:
             # Clamp to shelf zone bounds so it always falls inside the shelves
@@ -193,11 +217,15 @@ class Grid:
         shelf_cols_arr = np.array(sorted(shelf_cols))
         self.cells[np.ix_(shelf_rows, shelf_cols_arr)] = ITEM
 
-        # 3. Clear the cross-aisle row — overwrites any shelves placed above.
-        self.cells[self.cross_aisle_row, :] = EMPTY
+        # 3. Clear the cross-aisle rows (only when enabled).
+        if self.cross_aisle_row is not None:
+            for _r in range(self.cross_aisle_row,
+                            min(self.rows, self.cross_aisle_row + self.cross_aisle_width)):
+                self.cells[_r, :] = EMPTY
 
-        # 4. Place the depot last so it is never overwritten.
-        self.cells[self.depot_row, self.depot_col] = DEPOT
+        # 4. Place all depots last so they are never overwritten.
+        for _dr, _dc in self.depots:
+            self.cells[_dr, _dc] = DEPOT
 
         # 5. Precompute a plain Python bool list-of-lists for fast walkability
         #    checks in the A* pathfinder.  Single-element numpy array access has
@@ -230,12 +258,20 @@ class Grid:
                 s = chr(65 + r) + s
             return s
 
+        # All rows cleared by the cross-aisle (empty set when disabled)
+        if self.cross_aisle_row is not None:
+            cross_aisle_rows = set(range(self.cross_aisle_row,
+                                         min(self.rows,
+                                             self.cross_aisle_row + self.cross_aisle_width)))
+        else:
+            cross_aisle_rows = set()
+
         for idx, col in enumerate(cols_sorted):
             letter = col_letter(idx)
             row_number = 1
             for row in range(self.shelf_start_row, self.shelf_end_row + 1):
-                if row == self.cross_aisle_row:
-                    # Cross-aisle row is walkable floor — no shelf label here
+                if row in cross_aisle_rows:
+                    # Cross-aisle rows are walkable floor — no shelf label here
                     continue
                 self.shelf_labels[(row, col)] = f"{letter}{row_number}"
                 row_number += 1

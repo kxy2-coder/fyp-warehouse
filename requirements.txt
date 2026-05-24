@@ -1,1 +1,22 @@
+# Sim_V3 dependencies
+# Install with: pip install -r requirements.txt
+
+# Core simulation
 pygame>=2.0
+numpy>=1.24
+pandas>=2.0
+shapely>=2.0
+
+# Pedestrian dynamics (JuPedSim CFSM physics)
+jupedsim>=1.2
+
+# Reinforcement learning
+gymnasium>=0.29
+stable-baselines3>=2.3
+
+# Plotting / visualisation
+matplotlib>=3.7
+plotly>=5.18
+
+# Dashboard
+streamlit>=1.30

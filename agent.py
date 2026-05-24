@@ -1,38 +1,7 @@
 # =============================================================================
-# agent.py — Vectorised Warehouse Workers
+# agent.py —  Warehouse Workers
 # =============================================================================
-# This file defines the Agent class — but now ONE Agent object manages ALL
-# warehouse workers simultaneously using numpy arrays instead of a for-loop
-# over individual Agent objects.
-#
-# WHY VECTORISE?
-#   Instead of looping "for each agent, do maths", we store every agent's
-#   data in numpy arrays and do ALL agents' maths in one numpy call.
-#   Example: fatigue for 4 agents used to be 4 separate calls to math.exp.
-#   Now it is ONE call: np.exp(-FATIGUE_d * self.the ) which processes
-#   all 4 agents' work_time values in a single C-level operation.
-#
-# Human factors are modeled based on:
-#   Malpas & Relvas (2025) — "Designing a virtual warehouse operator
-#   integrating fatigue, recovery, and learning using agent-based modeling"
-#
-# HUMAN FACTORS IMPLEMENTED:
-#
-#   1. FATIGUE (exponential buildup during work)
-#      I(w) = 1 - e^(-d * w)     d = 0.20
-#
-#   2. RECOVERY (exponential decay during rest at depot)
-#      R(x) = e^(-r * x) - 1     r = 0.25
-#
-#   3. FATIGUE AFFECTS WALKING SPEED
-#      Pause probability = alpha * F / 2
-#
-#   4. FATIGUE AFFECTS PICKUP DURATION
-#      Da = (1 + alpha * F) * E(w,B) * Do
-#
-#   5. EXPERIENCE / LEARNING CURVE
-#      E(w, B) = M + (1 - M) * (w + B)^(-b)
-#      Each agent independently has a 35% chance of being experienced (B=1000h).
+
 #
 # STATE ENCODING (integers instead of strings for numpy compatibility):
 #   0 = waiting     — at depot, shift not started
@@ -69,7 +38,7 @@ DEMAND_BETA = 0.3      # amplitude parameter (moderate time-varying shape)
 # JOBS_STD  = 14  (deprecated — kept for reference)
 
 # ── Number of runs for the experiment mode (--experiment flag) ────────────────
-NUM_RUNS = 50
+NUM_RUNS = 20 
 
 # ── Real-time costs per action (in hours) ────────────────────────────────────
 WALK_TIME         = 1 / 3600       # 1 second per cell walked

@@ -19,6 +19,7 @@
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend — saves to file only
 import argparse
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
@@ -45,6 +46,30 @@ def load_log(filepath="training_log.csv"):
     return df
 
 
+def load_eval_log(filepath="evaluations.npz"):
+    """
+    Load the EvalCallback evaluation log (evaluations.npz).
+    Returns (timesteps, mean_rewards) arrays, or (None, None) if not found.
+    """
+    if not os.path.exists(filepath):
+        return None, None
+    data = np.load(filepath)
+    timesteps    = data["timesteps"]       # training timestep at each eval
+    mean_rewards = data["results"].mean(axis=1)   # mean reward per eval
+
+    # Remove invalid layout points (reward = -1.0) caused by policy
+    # occasionally pushing parameters into infeasible combinations during eval
+    valid_mask   = mean_rewards >= 0.0
+    n_removed    = np.sum(~valid_mask)
+    if n_removed > 0:
+        print(f"  Removed {n_removed} invalid eval points (reward < 0)")
+    timesteps    = timesteps[valid_mask]
+    mean_rewards = mean_rewards[valid_mask]
+
+    print(f"  Loaded {len(timesteps)} evaluation checkpoints from '{filepath}'")
+    return timesteps, mean_rewards
+
+
 def plot_metric(ax, df, column, ylabel, color, window, higher_is_better=True):
     """
     Plot a single metric: raw values as faint dots, rolling average as line.
@@ -65,8 +90,7 @@ def plot_metric(ax, df, column, ylabel, color, window, higher_is_better=True):
     # Show start and end values of the rolling average
     start_val = rolling.iloc[min(window, len(rolling) - 1)]
     end_val   = rolling.iloc[-1]
-    direction = "higher = better" if higher_is_better else "lower = better"
-    ax.set_title(f"{ylabel}  ({direction})\n"
+    ax.set_title(f"{ylabel}\n"
                  f"Start: {start_val:.3f}  →  End: {end_val:.3f}",
                  fontsize=11)
 
@@ -76,12 +100,13 @@ def plot_parameters(ax, df, window):
     Plot layout parameter values over episodes to see what the agent changed.
     """
     params = [
-        ("aisle_width",        "Aisle width",        "#534AB7"),
+        ("aisle_width",        "Aisle width",         "#534AB7"),
         ("centre_aisle_width", "Centre aisle width",  "#1D9E75"),
-        ("depot_col",          "Depot col",           "#D85A30"),
+        ("depot_count",        "Depot count",         "#D85A30"),
         ("shelf_start_row",    "Shelf start row",     "#378ADD"),
         ("shelf_end_row",      "Shelf end row",       "#D4537E"),
         ("cross_aisle_row",    "Cross-aisle row",     "#E8A020"),
+        ("cross_aisle_on",     "Cross-aisle on",      "#8B6FBA"),
     ]
 
     episodes = df["episode"]
@@ -117,7 +142,7 @@ def main():
     fig.suptitle("Warehouse Layout RL Training Results",
                  fontsize=14, fontweight="bold", y=0.98)
 
-    # Plot 1: Overall reward
+    # Plot 1: Overall reward (training only)
     plot_metric(axes[0, 0], df, "reward",
                 "Reward (0-1)", "#534AB7", args.window, higher_is_better=True)
 
@@ -127,12 +152,12 @@ def main():
 
     # Plot 3: Distance per agent (raw, not normalised)
     plot_metric(axes[1, 0], df, "dist_per_agent",
-                "Avg distance per agent (cells)", "#D85A30", args.window,
+                "Avg distance per agent (metres)", "#D85A30", args.window,
                 higher_is_better=False)
 
     # Plot 4: Congestion rate (raw, not normalised)
     plot_metric(axes[1, 1], df, "congestion_rate",
-                "Congestion rate (conflicts/pick)", "#D4537E", args.window,
+                "Congestion rate", "#D4537E", args.window,
                 higher_is_better=False)
 
     # Plot 5: Layout parameters

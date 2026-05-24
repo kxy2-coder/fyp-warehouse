@@ -31,13 +31,17 @@ class TraceLogger:
         """Record one dict per agent at this tick."""
         for i in range(self.n_agents):
             self.records.append({
-                "tick":           tick,
-                "agent_id":       i + 1,
-                "picks":          int(agent.orders_completed[i]),
-                "distance":       int(agent.distance[i]),
-                "idle_ticks":     int(agent.idle_ticks[i]),
-                "blocked_events": int(agent.blocked_events[i]),
-                "fatigue":        round(float(agent.fatigue[i]), 4),
+                "tick":       tick,
+                "agent_id":   i + 1,
+                "picks":      int(agent.orders_completed[i]),
+                "distance":   round(float(agent.distance[i]), 1),
+                "idle_ticks": int(agent.idle_ticks[i]),
+                # slow_ticks / walk_ticks: JuPedSim physics-based congestion.
+                # slow_ticks = ticks agent walked at < 20% free speed.
+                # walk_ticks = total ticks agent was walking.
+                # Congestion rate % = slow_ticks / walk_ticks × 100.
+                "slow_ticks": int(agent.slow_ticks[i]),
+                "walk_ticks": int(agent.walk_ticks[i]),
             })
 
     def save_csv(self, filename):
@@ -158,10 +162,8 @@ class MetricsTracker:
 
     def collect_raw(self, agent):
         return {
-            "cell_conflicts":    self.cell_conflicts,
-            "total_distance":    int(agent.distance.sum()),
-            "total_work_time":   float(agent.work_time.sum()),
-            "jobs_arrived":      int(agent.total_orders),
-            "jobs_completed":    int(agent.orders_completed.sum()),
-            "avg_final_fatigue": float(agent.fatigue.mean()),
+            "cell_conflicts":  self.cell_conflicts,
+            "total_distance":  int(agent.distance.sum()),
+            "jobs_arrived":    int(agent.total_orders),
+            "jobs_completed":  int(agent.orders_completed.sum()),
         }
