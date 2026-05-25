@@ -288,7 +288,11 @@ def run_experiment(args):
     print()
 
     if args.plot_workload:
-        from plot_workload import plot_from_data
+        from plot_workload import plot_from_data, save_workload_csv
+        # Always save tick-level CSV alongside the plot so it can be
+        # re-rendered later (same convention as heatmap/traces).
+        save_workload_csv(all_arrivals, all_completions,
+                          out_file="workload_data.csv")
         plot_from_data(all_arrivals, all_completions,
                        bin_size=args.bin, n_agents=args.agents)
 

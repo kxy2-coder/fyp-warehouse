@@ -55,6 +55,46 @@ def theoretical_arrivals_per_bin(bin_size):
 # Core plotting function — accepts pre-collected data from any source
 # =============================================================================
 
+def save_workload_csv(all_arrivals, all_completions,
+                      out_file="workload_data.csv"):
+    """
+    Save averaged tick-level workload data to CSV.
+    Columns: tick, arrivals, completions (avg across runs).
+    Re-plot later via: plot_from_csv("workload_data.csv")
+    """
+    import csv
+    avg_arrivals    = np.mean(all_arrivals,    axis=0)
+    avg_completions = np.mean(all_completions, axis=0)
+    with open(out_file, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["tick", "arrivals", "completions"])
+        for t in range(len(avg_arrivals)):
+            w.writerow([t, avg_arrivals[t], avg_completions[t]])
+    print(f"  Workload data saved → {out_file}")
+
+
+def plot_from_csv(csv_file="workload_data.csv", bin_size=600,
+                  out_file="workload_analysis.png", n_agents=4):
+    """
+    Re-plot workload analysis from a saved CSV (no simulation needed).
+    Useful when you want to tweak bin size, colours, labels without
+    re-running the full simulation.
+    """
+    import csv
+    arrivals    = []
+    completions = []
+    with open(csv_file, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            arrivals.append(float(row["arrivals"]))
+            completions.append(float(row["completions"]))
+    arr  = np.array(arrivals,    dtype=np.float64)
+    comp = np.array(completions, dtype=np.float64)
+    # Wrap as single-run lists so plot_from_data can consume them unchanged
+    plot_from_data([arr], [comp], bin_size=bin_size,
+                   out_file=out_file, n_agents=n_agents)
+
+
 def plot_from_data(all_arrivals, all_completions, bin_size=600,
                    out_file="workload_analysis.png", n_agents=4):
     """
@@ -236,7 +276,18 @@ def main():
                         help="Bin size in ticks/seconds (default 600 = 10 min)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Base random seed (default 42)")
+    parser.add_argument("--save-csv", action="store_true",
+                        help="Also save tick-level data to workload_data.csv "
+                             "(for later re-plotting via plot_from_csv())")
+    parser.add_argument("--from-csv", type=str, default=None,
+                        help="Skip simulation and re-plot from saved CSV instead")
     args = parser.parse_args()
+
+    # Re-plot path: load CSV and skip simulation entirely
+    if args.from_csv:
+        print(f"\n  Re-plotting from {args.from_csv} (no simulation)")
+        plot_from_csv(args.from_csv, bin_size=args.bin)
+        return
 
     print(f"\nRunning {args.runs} simulation(s) × {SHIFT_TICKS} ticks each...")
 
@@ -248,6 +299,9 @@ def main():
         arr, comp = _run_tracked_simulation(seed=seed)
         all_arrivals.append(arr)
         all_completions.append(comp)
+
+    if args.save_csv:
+        save_workload_csv(all_arrivals, all_completions)
 
     plot_from_data(all_arrivals, all_completions, bin_size=args.bin)
 
