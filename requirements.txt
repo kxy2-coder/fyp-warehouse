@@ -17,6 +17,3 @@ stable-baselines3>=2.3
 # Plotting / visualisation
 matplotlib>=3.7
 plotly>=5.18
-
-# Dashboard
-streamlit>=1.30
