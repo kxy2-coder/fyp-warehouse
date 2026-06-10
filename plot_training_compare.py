@@ -1,7 +1,7 @@
 # =============================================================================
 # plot_training_compare.py — Compare reward curves across operating conditions
 # =============================================================================
-# Reads multiple training_log.csv files from Results_final/Agents=N,Lambda=X/
+# Reads multiple training_log.csv files from Final_Training_Results/Agents=N,Lambda=X/
 # and plots the rolling-average reward for each lambda on a single figure,
 # letting you see how training quality varies with arrival rate at a fixed
 # agent count.
@@ -9,7 +9,7 @@
 # Usage:
 #   python plot_training_compare.py --agents 4
 #   python plot_training_compare.py --agents 6 --window 30
-#   python plot_training_compare.py --agents 8 --root Results_final
+#   python plot_training_compare.py --agents 8 --root Final_Training_Results
 # =============================================================================
 
 import argparse
@@ -28,7 +28,7 @@ matplotlib.rcParams.update({
     "font.size":        11,
 })
 
-# Lambda values to plot for each agent count (matches Results_final folder names)
+# Lambda values to plot for each agent count (matches Final_Training_Results folder names)
 LAMBDA_SETS = {
     4: [0.02, 0.04, 0.06, 0.08, 0.10],
     6: [0.04, 0.06, 0.08, 0.10, 0.12],
@@ -51,7 +51,7 @@ LAMBDA_COLOURS = {
 def _candidate_folders(root, agents, lam):
     """
     Return possible folder paths for an (agents, lambda) combo. The
-    Results_final folder uses inconsistent capitalisation ("Lambda" vs "lambda")
+    Final_Training_Results folder uses inconsistent capitalisation ("Lambda" vs "lambda")
     and lambda values like 0.1 (no trailing zero), so we try several variants.
     """
     lam_strs = [f"{lam:g}", f"{lam:.2f}"]              # 0.1 and 0.10
@@ -72,7 +72,7 @@ def _load_log(root, agents, lam):
     return None, None
 
 
-def plot_agents(agents, root="Results_final", window=20,
+def plot_agents(agents, root="Final_Training_Results", window=20,
                 out_file=None, lambdas=None):
     """
     Plot rolling-average reward for every lambda value at a given agent count.
@@ -135,9 +135,9 @@ def main():
     parser.add_argument("--agents", type=int, required=True,
                         choices=[4, 6, 8],
                         help="Number of agents (4, 6 or 8)")
-    parser.add_argument("--root",   type=str, default="Results_final",
+    parser.add_argument("--root",   type=str, default="Final_Training_Results",
                         help="Root folder containing Agents=N,Lambda=X subdirs "
-                             "(default: Results_final)")
+                             "(default: Final_Training_Results)")
     parser.add_argument("--window", type=int, default=20,
                         help="Rolling-average window size (default: 20)")
     parser.add_argument("--out",    type=str, default=None,

@@ -35,7 +35,7 @@ python main.py --agents 6
 |---|---|
 | `grid.py` | Builds the warehouse grid (shelves, aisles, depots, cross-aisle). All layout parameters are constructor arguments — no magic numbers. |
 | `jupedsim_agent.py` | Picker movement using the JuPedSim Collision-Free Speed Model (Tordeux et al., 2016). Handles continuous-space navigation, physical collision avoidance, congestion detection, and stuck-detection sidestep. |
-| `agent.py` | Demand model (`nhpp_arrival`, `get_multiplier`) + shared constants (`SHIFT_TICKS`, `LAMBDA_BASE`, state-machine integers). Also contains a legacy Sim_V2 `Agent` class kept solely for `plot_workload.py`. |
+| `agent.py` | Demand model (`nhpp_arrival`, `get_multiplier`) + shared constants (`SHIFT_TICKS`, `LAMBDA_BASE`, state-machine integers). Also contains a legacy grid-based `Agent` class kept solely for `plot_workload.py`. |
 | `pathfinder.py` | A\* shortest-path used by the legacy `Agent` class. Not used by the RL pipeline. |
 | `metrics.py` | `TraceLogger` (per-bin KPI snapshots → `agent_traces.csv`) and `MetricsTracker` (run-level totals). |
 
@@ -54,7 +54,7 @@ python main.py --agents 6
 |---|---|
 | `sensitivity_analysis.py` | One-at-a-time sensitivity run over all seven layout decision variables. Produces a 4×2 KPI response figure and a ranked sensitivity bar chart. Re-plot from CSV with `--plot-only`. |
 | `plot_training.py` | Reward, KPI, and layout-parameter curves over training episodes. |
-| `plot_training_compare.py` | Overlays reward curves across multiple `(N agents, λ)` runs stored under `Results_final/`. |
+| `plot_training_compare.py` | Overlays reward curves across multiple `(N agents, λ)` runs stored under `Final_Training_Results/`. |
 | `plot_agent_traces.py` | 2×2 per-agent figure (picks, distance, idle time, congestion time) from `agent_traces.csv`. Also plots per-tick walking speed from `speed_trace.csv`. |
 | `plot_heatmap.py` | Spatial overlay of `traffic_heatmap.csv` or `congestion_heatmap.csv` on the warehouse grid. Supports side-by-side comparison via `--compare`. |
 | `plot_workload.py` | NHPP demand visualisation — arrivals vs completions over a shift. |
@@ -123,7 +123,7 @@ These are produced by the scripts and are not committed:
 - `kpi_bounds.json`, `sensitivity_baseline.json` — cached calibration
 - `agent_traces.csv`, `speed_trace.csv`, `traffic_heatmap.csv`, `congestion_heatmap.csv` — per-run outputs
 - `*.png`, `*.pdf` — figures (regenerate from the plot scripts)
-- `runs/`, `Results_final/` — saved experiment bundles
+- `runs/`, `Final_Training_Results/` — saved experiment bundles
 
 ---
 

@@ -1,7 +1,7 @@
 # =============================================================================
 # agent.py — Demand model, shared constants, legacy Agent class
 # =============================================================================
-# In Sim_V3 this file holds the pieces that are shared across the codebase:
+# This file holds the pieces that are shared across the codebase:
 #
 #   1. Demand model    — nhpp_arrival(), get_multiplier() implement the
 #                        non-homogeneous Poisson process used to dispatch
@@ -9,11 +9,11 @@
 #   2. Shared constants — SHIFT_TICKS, LAMBDA_BASE, DEMAND_BETA, the state
 #                        machine integers (STATE_WAITING ... STATE_ALL_DONE),
 #                        and timing constants used by main.py / metrics.py.
-#   3. Legacy Agent class — A Sim_V2 grid-based mover that uses pathfinder.py
-#                        (A*) for routing. NOT used by the RL pipeline; kept
-#                        only because plot_workload.py still spins it up to
-#                        visualise the NHPP demand. Real agent movement in
-#                        Sim_V3 is handled by jupedsim_agent.py.
+#   3. Legacy Agent class — A grid-based mover that uses pathfinder.py (A*)
+#                        for routing. NOT used by the RL pipeline; kept only
+#                        because plot_workload.py still spins it up to
+#                        visualise the NHPP demand. Real agent movement is
+#                        handled by jupedsim_agent.py.
 #
 # STATE ENCODING (integers — keeps numpy arrays homogeneous):
 #   0 = waiting     — at depot, shift not started

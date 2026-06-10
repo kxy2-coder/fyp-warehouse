@@ -1,24 +1,27 @@
 # =============================================================================
-# jupedsim_agent.py — JuPedSim-powered Agent Movement for Sim_V3
+# jupedsim_agent.py — JuPedSim-powered continuous agent movement
 # =============================================================================
-# Replaces agent.py + pathfinder.py from Sim_V2.
+# Drives all picker movement in the active simulation pipeline. Replaces the
+# legacy grid-stepping Agent (agent.py) + A* pathfinder (pathfinder.py).
 #
-# WHAT CHANGES vs Sim_V2:
-#   agent.py    — used A* to find a grid path, moved one cell per tick,
-#                 conflicts detected when two agents shared a cell.
-#   THIS FILE   — JuPedSim moves agents continuously through 2D space,
-#                 collision avoidance is handled physically (agents slow
-#                 down and steer around each other).
+# WHAT THIS FILE DOES:
+#   - Moves agents continuously through 2D space via the JuPedSim
+#     Collision-Free Speed Model (Tordeux et al., 2016).
+#   - Collision avoidance is handled physically — agents slow down and
+#     steer around each other rather than waiting in discrete cells.
+#   - Detects congestion (speed < 50% of free speed AND another agent
+#     within 0.9 m) and runs a stuck-detection sidestep when two agents
+#     deadlock head-on in narrow corridors.
 #
-# WHAT STAYS THE SAME:
-#   - Job assignment (NHPP model, job queue)
+# WHAT IT SHARES WITH THE REST OF THE CODEBASE:
+#   - Job assignment via the NHPP demand model in agent.py
 #   - State machine (waiting → to_item → picking → to_depot → resting)
-#   - Item depletion / replenishment on the grid
-#   - KPI format returned to rl_env.py
+#   - Item depletion / replenishment on the grid (grid.py)
+#   - KPI format returned to rl_env.py / main.py
 #
 # HUMAN FACTORS (fatigue, experience, learning curve):
-#   Not modelled in Sim_V3. JuPedSim's Collision-Free Speed Model already
-#   provides empirically validated crowd dynamics (natural speed variation,
+#   Not modelled here. The Collision-Free Speed Model already provides
+#   empirically validated crowd dynamics (natural speed variation,
 #   physical collision avoidance). Layering an uncalibrated fatigue model
 #   on top would conflate physiological and physical effects. Acknowledged
 #   as future work requiring empirical calibration data.
@@ -79,7 +82,7 @@ CONGESTION_SPEED   = FREE_SPEED * 0.5 # 0.6 m/s — speed below which an agent i
                                       # significantly slowed. At CONGESTION_RADIUS separation
                                       # JuPedSim physics naturally produces speeds near this
                                       # value, so the two thresholds are mutually consistent.
-PICKUP_TICKS       = 10               # ticks spent picking up an item (same as Sim_V2)
+PICKUP_TICKS       = 10               # ticks spent picking up an item
 REST_TICKS         = 10               # ticks resting at depot between jobs
 
 # ── Anti-stuck "step aside" thresholds ────────────────────────────────────────
@@ -411,8 +414,8 @@ class JupedSimAgent:
         return all(s == STATE_ALL_DONE for s in self.state)
 
     # =========================================================================
-    # Compatibility properties — allow main.py to use the same attribute
-    # access patterns as Sim_V2's Agent class.
+    # Compatibility properties — expose the same attribute names as the
+    # legacy grid-based Agent class so main.py can drive both.
     # =========================================================================
 
     @property
@@ -428,7 +431,7 @@ class JupedSimAgent:
     @property
     def slow_ticks(self):
         """
-        Per-agent congestion ticks — replaces blocked_events from Sim_V2.
+        Per-agent congestion ticks (replaces the older blocked_events count).
         Counts ticks each agent spent walking at < 20% of free speed,
         indicating physical slowing due to nearby agents.
         Returns a numpy array for consistency with other per-agent metrics.
@@ -703,8 +706,8 @@ class JupedSimAgent:
 
     def collect_raw(self):
         """
-        Return raw metrics in the format expected by rl_env.py.
-        Matches the dict returned by MetricsTracker.collect_raw() in Sim_V2.
+        Return raw metrics in the format expected by rl_env.py — the same
+        dict shape as MetricsTracker.collect_raw().
         """
         return {
             "total_distance":  sum(self.distance),

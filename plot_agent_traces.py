@@ -63,8 +63,8 @@ def load_traces(filename):
                 "picks":      float(row["picks"]),
                 "distance":   float(row["distance"]),
                 "idle_ticks": float(row["idle_ticks"]),
-                # slow_ticks replaces blocked_events from Sim_V2 — fall back
-                # gracefully so old CSVs still load without crashing.
+                # slow_ticks replaces the older blocked_events field —
+                # fall back gracefully so old CSVs still load.
                 "slow_ticks": float(row.get("slow_ticks", row.get("blocked_events", 0))),
                 "walk_ticks": float(row.get("walk_ticks", 0)),
             })

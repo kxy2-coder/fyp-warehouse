@@ -1,10 +1,10 @@
 # =============================================================================
-# rl_env.py — Reinforcement Learning Environment for Warehouse Layout (Sim_V3)
+# rl_env.py — Reinforcement Learning Environment for Warehouse Layout
 # =============================================================================
-# Wraps the Sim_V3 warehouse simulation into a Gymnasium environment for
-# training a PPO agent (Stable Baselines 3) to optimise warehouse layout.
+# Wraps the warehouse simulation into a Gymnasium environment for training a
+# PPO agent (Stable Baselines 3) to optimise warehouse layout.
 #
-# SIMULATION BACKEND (Sim_V3):
+# SIMULATION BACKEND:
 #   - JuPedSim Collision-Free Speed Model (CFSM) for continuous agent movement
 #   - Physics-based collision avoidance — no discrete cell-blocking
 #   - Congestion measured as fraction of walking ticks where agent speed
@@ -407,7 +407,7 @@ def calibrate_kpi_bounds(num_samples=200, eval_runs=1, force=False):
     print(f"    Max storage   : {bounds['max_storage']} items "
           f"(highest seen across {len(storage_values)} valid layouts)")
 
-    # Validate bounds against default layout (Sim_V3 defaults)
+    # Validate bounds against the default layout
     default_result = run_single_simulation(
         aisle_width=DEFAULT_AISLE_WIDTH,
         centre_aisle_width=DEFAULT_CENTRE_AISLE,

@@ -1,4 +1,4 @@
-# Sim_V3 dependencies
+# Project dependencies
 # Install with: pip install -r requirements.txt
 
 # Core simulation

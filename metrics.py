@@ -12,8 +12,8 @@
 #                     distance, congestion ticks, replenishment events)
 #                     and exposes them to main.py / plot_workload.py.
 #
-# Both work with the JupedSimAgent (Sim_V3) instance shape; the legacy
-# Sim_V2 Agent class is no longer the primary client of this module.
+# Both work with the JupedSimAgent instance shape; the legacy grid-based
+# Agent class is no longer the primary client of this module.
 # =============================================================================
 
 import csv

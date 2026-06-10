@@ -53,7 +53,7 @@ def parse_args():
     parser.add_argument("--depot-col",     type=int,   default=None, help="Single depot column (overridden by --depot-count)")
     parser.add_argument("--depot-count",   type=int,   default=None, choices=[1,2,3,4],
                         help="Number of equally-spaced depots 1-4 (positions auto-computed; overrides --depot-col)")
-    parser.add_argument("--shelf-start",     type=int,   default=2,    help="First row shelves appear (default 3 for Sim_V3 JuPedSim agents)")
+    parser.add_argument("--shelf-start",     type=int,   default=2,    help="First row shelves appear (default 2, matching RL training)")
     parser.add_argument("--shelf-end",         type=int,   default=23,   help="Last row shelves appear (default 23 = rows-2, matching RL training)")
     parser.add_argument("--cross-aisle-row",   type=int,   default=None, help="Row of horizontal cross-aisle (default = middle of shelf zone)")
     parser.add_argument("--cross-aisle-width", type=int,   default=2,    help="Width in rows of the cross-aisle (default 2)")
@@ -550,8 +550,8 @@ def jps_to_pixel(jps_x, jps_y):
 def draw_grid(surface, grid, agent, metrics, font_small):
     """Draw the warehouse grid, agents, paths, targets, conflict flash."""
     # JuPedSim routes internally — no pre-computed path to visualise.
-    # In Sim_V2, A* produced a list of cells shown as dots on screen.
-    # Here we just use empty sets (path dots are simply not drawn).
+    # (The legacy A* mover produced a list of cells shown as dots on screen;
+    # we just use empty sets here so path dots are simply not drawn.)
     upcoming = [set() for _ in range(agent.n)]
 
     for r in range(grid.rows):
@@ -761,8 +761,8 @@ def draw_panel(surface, grid, agent, metrics, font_big, font_med, font_small,
 
 
 # resolve_conflicts() removed — JuPedSim handles collision avoidance physically.
-# Agents now slow down and steer around each other using the Collision Free
-# Speed Model instead of the reactive cell-blocking approach from Sim_V2.
+# Agents slow down and steer around each other using the Collision-Free Speed
+# Model rather than a reactive cell-blocking approach.
 
 
 # =============================================================================
