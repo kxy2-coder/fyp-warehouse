@@ -1,34 +1,56 @@
-# Python cache
+# =============================================================================
+# .gitignore — keep only script files; exclude data, models, artifacts
+# =============================================================================
+
+# Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*.egg-info/
+.pytest_cache/
 
 # Virtual environments
 .venv/
 venv/
 env/
 
-# Training artifacts (regenerated each run)
-training_log.csv
-evaluations.npz
-best_model.zip
-warehouse_layout_ppo.zip
-warehouse_layout_ppo_v3.zip
+# Training artifacts
 runs/
+*.zip
+*.npz
+best_model*
+warehouse_layout_ppo*
 
-# Simulation outputs
-agent_traces.csv
-conflict_heatmap.csv
-traffic_heatmap.csv
-congestion_heatmap.csv
-speed_trace.csv
-replay.json
-sensitivity_results.csv
+# Saved experiment results
+results/
+Results_final/
+"Layout Results"/
 
-# Generated plots
+# Generated CSVs (simulation outputs)
+*.csv
+
+# Generated JSON state files
+kpi_bounds.json
+sensitivity_baseline.json
+
+# Generated figures (regenerate from scripts)
 *.png
+*.pdf
+*.svg
 
-# OS / IDE
+# Log files
+*.log
+nohup.out
+
+# OS / editor cruft
 .DS_Store
+Thumbs.db
+*.swp
 .vscode/
 .idea/
+
+# Windows / WSL artifacts
+*:Zone.Identifier
+
+# Allow specific essentials back in (if you want)
+# !README.md
+# !requirements.txt

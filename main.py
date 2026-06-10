@@ -62,7 +62,7 @@ def parse_args():
     parser.add_argument("--experiment",      action="store_true",      help="Silent multi-run averaging mode (no Pygame)")
     parser.add_argument("--runs",            type=int,   default=None, help="Override NUM_RUNS for --experiment mode")
     parser.add_argument("--replenish-delay", type=int,   default=100,  help="Ticks before a picked shelf restocks (default 100)")
-    parser.add_argument("--lambda-base",    type=float, default=0.0833, help="NHPP base arrival rate per tick (default 0.0833)")
+    parser.add_argument("--lambda-base",    type=float, default=0.1, help="NHPP base arrival rate per tick (default 0.0833)")
     parser.add_argument("--beta",           type=float, default=None, help=f"NHPP amplitude parameter (default {DEMAND_BETA})")
     parser.add_argument("--plot-workload",  action="store_true",      help="Save workload analysis plot after --experiment run")
     parser.add_argument("--plot-traces",   action="store_true",      help="Save per-agent trace plot after --experiment run")

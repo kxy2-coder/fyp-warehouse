@@ -100,7 +100,7 @@ def _load_speed_trace(speed_file):
 def plot_from_traces(filename="agent_traces.csv", out_file="agent_traces.png"):
     """
     Build and save the per-agent trace plot from a CSV file.
-    Produces a 3-panel figure: picks, distance, idle ticks (all 10-min bins).
+    Produces a 2x2 figure: picks, distance, idle time, congestion (all 10-min bins).
     Walking speed is plotted separately by plot_speed_trace().
     """
     agents = load_traces(filename)
@@ -114,12 +114,14 @@ def plot_from_traces(filename="agent_traces.csv", out_file="agent_traces.png"):
         return [vals[i] - vals[i-1] if i > 0 else vals[0]
                 for i in range(len(vals))]
 
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5))
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(14, 9))
     fig.suptitle(
-        f"Per-Agent Performance Traces  —  {n_agents} agents, 8-hour shift"
-        f"  (averaged across runs, 10-min bins)",
+        f"Per-Agent Performance Traces: {n_agents} agents (per 10-min bins)",
         fontsize=12, fontweight="bold",
     )
+
+    # Collect per-agent series so we can compute proper y-limits afterwards
+    all_picks, all_dist, all_idle, all_cong = [], [], [], []
 
     for idx, aid in enumerate(agent_ids):
         records   = agents[aid]
@@ -128,21 +130,44 @@ def plot_from_traces(filename="agent_traces.csv", out_file="agent_traces.png"):
         picks_bin = per_bin(records, "picks")
         dist_bin  = per_bin(records, "distance")
         idle_bin  = per_bin(records, "idle_ticks")
+        cong_bin  = per_bin(records, "slow_ticks")
+        all_picks.extend(picks_bin)
+        all_dist.extend(dist_bin)
+        all_idle.extend(idle_bin)
+        all_cong.extend(cong_bin)
         ax1.plot(ticks_hrs, picks_bin, color=col, linewidth=1.2, label=label, alpha=0.85)
         ax2.plot(ticks_hrs, dist_bin,  color=col, linewidth=1.2, label=label, alpha=0.85)
         ax3.plot(ticks_hrs, idle_bin,  color=col, linewidth=1.2, label=label, alpha=0.85)
+        ax4.plot(ticks_hrs, cong_bin,  color=col, linewidth=1.2, label=label, alpha=0.85)
 
-    for ax, title, ylabel in [
-        (ax1, "Picks per 10-min Bin",             "Picks"),
-        (ax2, "Distance per 10-min Bin (metres)", "Metres walked"),
-        (ax3, "Idle Ticks per 10-min Bin",        "Ticks waiting"),
-    ]:
+    def _padded_ylim(vals, pad_frac=0.08, force_zero_visible=False):
+        """Return (lo, hi) with padding above/below the data range.
+        If force_zero_visible, ensure 0 sits a little above the bottom so
+        a flat-at-zero line is still visible above the x-axis."""
+        if not vals:
+            return 0, 1
+        lo, hi = min(vals), max(vals)
+        if hi == lo:
+            hi = lo + 1
+        span = hi - lo
+        pad  = span * pad_frac
+        if force_zero_visible:
+            return -pad, hi + pad
+        return max(0, lo - pad), hi + pad
+
+    panels = [
+        (ax1, "Picks",          "Picks",         _padded_ylim(all_picks)),
+        (ax2, "Distance (metres)", "Metres walked", _padded_ylim(all_dist)),
+        (ax3, "Idle time",       "Seconds", _padded_ylim(all_idle, force_zero_visible=True)),
+        (ax4, "Congestion time", "Seconds", _padded_ylim(all_cong, force_zero_visible=True)),
+    ]
+    for ax, title, ylabel, (ylo, yhi) in panels:
         ax.set_title(title, fontsize=11)
         ax.set_xlabel("Shift time (hours)", fontsize=9)
         ax.set_ylabel(ylabel, fontsize=9)
         ax.set_xticks(range(9))
         ax.set_xlim(0, max(ticks_hrs) + 0.1)
-        ax.set_ylim(bottom=0)
+        ax.set_ylim(ylo, yhi)
         ax.legend(fontsize=8, ncol=2)
         ax.grid(alpha=0.3)
 
@@ -153,7 +178,8 @@ def plot_from_traces(filename="agent_traces.csv", out_file="agent_traces.png"):
 
 
 def plot_speed_trace(filename="speed_trace.csv", n_agents=6,
-                     out_file="speed_trace.png", roll_window=120):
+                     out_file="speed_trace.png", roll_window=120,
+                     single_agent=None):
     """
     Plot per-tick walking speed for each agent over the full 8-hour shift.
 
@@ -168,7 +194,7 @@ def plot_speed_trace(filename="speed_trace.csv", n_agents=6,
         red dotted    — congestion threshold (0.24 m/s)
     """
     FREE_SPEED  = 1.2
-    CONG_THRESH = FREE_SPEED * 0.2
+    CONG_THRESH = FREE_SPEED * 0.5   # 0.6 m/s — 50% of free speed
 
     # Load CSV: columns = tick, agent_1, agent_2, ...
     ticks, speeds = [], {i: [] for i in range(1, n_agents + 1)}
@@ -184,34 +210,25 @@ def plot_speed_trace(filename="speed_trace.csv", n_agents=6,
     ticks_arr = np.array(ticks)
 
     fig, ax = plt.subplots(figsize=(14, 5))
+    agent_label = f"Agent {single_agent}" if single_agent else "All Agents"
     fig.suptitle(
-        f"Agent Walking Speed — per-second resolution  "
-        f"({roll_window}s rolling mean, averaged across runs)",
+        f"Walking Speed — {agent_label} — per-second resolution",
         fontsize=12, fontweight="bold",
     )
 
-    for idx in range(1, n_agents + 1):
+    agents_to_plot = [single_agent] if single_agent else range(1, n_agents + 1)
+
+    for idx in agents_to_plot:
         col   = AGENT_COLOURS[(idx - 1) % len(AGENT_COLOURS)]
         raw   = np.array(speeds[idx])
 
-        # Rolling mean (NaN-aware): use a pandas-free implementation
-        rolled = np.full_like(raw, np.nan)
-        for j in range(len(raw)):
-            window = raw[max(0, j - roll_window + 1): j + 1]
-            valid  = window[~np.isnan(window)]
-            if len(valid) > 0:
-                rolled[j] = valid.mean()
-
-        # Raw: faint scatter/line so the texture is visible
-        ax.plot(ticks_arr, raw,    color=col, linewidth=0.3, alpha=0.18)
-        # Rolling mean: solid bold line
-        ax.plot(ticks_arr, rolled, color=col, linewidth=1.4, alpha=0.90,
+        ax.plot(ticks_arr, raw, color=col, linewidth=0.6, alpha=0.85,
                 label=f"Agent {idx}")
 
     ax.axhline(FREE_SPEED,  color="green", linestyle="--", linewidth=1.2,
                alpha=0.7, label=f"Free speed ({FREE_SPEED} m/s)")
     ax.axhline(CONG_THRESH, color="red",   linestyle=":",  linewidth=1.2,
-               alpha=0.7, label=f"Congestion threshold ({CONG_THRESH:.2f} m/s)")
+               alpha=0.7, label=f"Congestion threshold — 50% free speed ({CONG_THRESH:.2f} m/s)")
 
     ax.set_xlabel("Shift time (hours)", fontsize=10)
     ax.set_ylabel("Walking speed (m/s)", fontsize=10)
@@ -237,8 +254,24 @@ def main():
                         help="CSV file to read (default: agent_traces.csv)")
     parser.add_argument("--out",  default="agent_traces.png",
                         help="Output PNG filename (default: agent_traces.png)")
+    parser.add_argument("--speed-trace", default=None, metavar="SPEED_CSV",
+                        help="Plot per-tick speed trace from speed_trace.csv "
+                             "(e.g. --speed-trace speed_trace.csv)")
+    parser.add_argument("--speed-out",   default="speed_trace.png",
+                        help="Output PNG for speed trace (default: speed_trace.png)")
+    parser.add_argument("--agents", type=int, default=6,
+                        help="Number of agents in speed_trace.csv (default: 6)")
+    parser.add_argument("--agent", type=int, default=None,
+                        help="Plot a single agent only (e.g. --agent 1)")
     args = parser.parse_args()
-    plot_from_traces(filename=args.file, out_file=args.out)
+
+    if args.speed_trace:
+        plot_speed_trace(filename=args.speed_trace,
+                         n_agents=args.agents,
+                         out_file=args.speed_out,
+                         single_agent=args.agent)
+    else:
+        plot_from_traces(filename=args.file, out_file=args.out)
 
 
 if __name__ == "__main__":

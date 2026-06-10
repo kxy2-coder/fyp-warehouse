@@ -101,9 +101,9 @@ def _draw_panel(ax, heatmap, shelf_mask, depot_positions, title, norm=None):
                 color="white", fontweight="bold", zorder=6)
 
     ax.set_title(title, fontsize=10, fontweight="bold")
-    ax.set_xlabel("Column", fontsize=8)
-    ax.set_ylabel("Row", fontsize=8)
-    ax.tick_params(labelsize=7)
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    ax.tick_params(labelbottom=False, labelleft=False, length=0)
 
     return im, norm
 
@@ -124,17 +124,15 @@ def plot_from_csv(filename="traffic_heatmap.csv",
     # Auto-detect which heatmap this is from the filename for the title
     is_congestion = "congestion" in filename.lower()
     if is_congestion:
-        suptitle  = "Congestion Hotspot Heatmap\n(avg ticks per cell — speed < 50% free speed AND another agent within 0.9 m)"
-        cbar_label = "Avg slow-walk ticks per cell"
+        suptitle  = "Congestion Hotspot Heatmap"
+        cbar_label = "Avg congestion time (s)"
     else:
-        suptitle  = "Traffic Density Heatmap\n(avg ticks agents spent walking through each cell)"
-        cbar_label = "Avg agent-ticks per cell"
+        suptitle  = "Traffic Density Heatmap\n(Average time spent walking through each cell)"
+        cbar_label = "Avg walking time (s)"
 
     fig, ax = plt.subplots(figsize=(10, 7))
-    fig.suptitle(suptitle, fontsize=11, fontweight="bold")
 
-    im, _ = _draw_panel(ax, heatmap, shelf_mask, depot_pos,
-                        title=f"{grid_rows}×{grid_cols} warehouse layout")
+    im, _ = _draw_panel(ax, heatmap, shelf_mask, depot_pos, title=suptitle)
 
     plt.colorbar(im, ax=ax, label=cbar_label, shrink=0.8)
     plt.tight_layout()
@@ -189,6 +187,7 @@ def plot_comparison(file_a, file_b,
 
 def plot_layout(grid_rows=25, grid_cols=35,
                 out_file="layout.png",
+                annotate=True,
                 **grid_kwargs):
     """
     Produce a clean black/white warehouse layout figure suitable for papers.
@@ -196,6 +195,9 @@ def plot_layout(grid_rows=25, grid_cols=35,
     Shelves = black  |  Aisles = white  |  Depot = dark square with 'D' label
 
     Cells are always equal-sized squares.
+
+    annotate=True overlays parameter labels (w_a, w_c, n_d, r_s, r_e, r_ca, b_ca)
+    to match Table 3.1 in the methodology section.
     """
     from grid import Grid, SHELF, ITEM, DEPOT, EMPTY
 
@@ -209,19 +211,21 @@ def plot_layout(grid_rows=25, grid_cols=35,
                 img[r, c] = 1.0
 
     # Figure size: each cell = 0.22 inches so cells are square.
-    cell_in   = 0.22
-    margin_t  = 0.15
-    margin_r  = 0.15
-    margin_bl = 0.15
-    fig_w = grid_cols * cell_in + margin_r  + margin_bl
-    fig_h = grid_rows * cell_in + margin_t  + margin_bl
+    # Larger margins reserve space for annotation labels around the grid edges.
+    cell_in   = 0.30 if annotate else 0.22
+    margin_t  = 0.60 if annotate else 0.15
+    margin_r  = 1.50 if annotate else 0.15
+    margin_l  = 1.00 if annotate else 0.15
+    margin_b  = 0.40 if annotate else 0.15
+    fig_w = grid_cols * cell_in + margin_r + margin_l
+    fig_h = grid_rows * cell_in + margin_t + margin_b
 
     fig = plt.figure(figsize=(fig_w, fig_h))
 
     # Position axes so grid cells are exactly square
     ax = fig.add_axes([
-        margin_bl / fig_w,          # left
-        margin_bl / fig_h,          # bottom
+        margin_l / fig_w,            # left
+        margin_b / fig_h,            # bottom
         grid_cols * cell_in / fig_w, # width
         grid_rows * cell_in / fig_h, # height
     ])
@@ -230,11 +234,11 @@ def plot_layout(grid_rows=25, grid_cols=35,
               extent=[-0.5, grid_cols - 0.5, grid_rows - 0.5, -0.5],
               vmin=0, vmax=1, interpolation="nearest")
 
-    # Thin cell grid lines
+    # Cell grid lines (more visible for clarity)
     for r in range(grid_rows + 1):
-        ax.axhline(r - 0.5, color="lightgrey", linewidth=0.25, zorder=2)
+        ax.axhline(r - 0.5, color="#888888", linewidth=0.5, zorder=2)
     for c in range(grid_cols + 1):
-        ax.axvline(c - 0.5, color="lightgrey", linewidth=0.25, zorder=2)
+        ax.axvline(c - 0.5, color="#888888", linewidth=0.5, zorder=2)
 
     # Depot markers
     for dr, dc in g.depots:
@@ -243,6 +247,108 @@ def plot_layout(grid_rows=25, grid_cols=35,
         ax.text(dc, dr, "D", ha="center", va="center",
                 fontsize=max(4, cell_in * 18), color="white",
                 fontweight="bold", zorder=4)
+
+    # ── Parameter annotations ──────────────────────────────────────────────
+    if annotate:
+        LBL_FS    = 14         # font size for variable labels
+        ARR_COL   = "black"    # bold black for arrows/labels
+        ARR_KW    = dict(arrowstyle="<->", color=ARR_COL, linewidth=1.6)
+        TXT_KW    = dict(fontsize=LBL_FS, color=ARR_COL,
+                         fontweight="bold", clip_on=False)
+
+        # ---- Find one pick aisle and the centre aisle ----
+        # Scan a row that DOES contain shelves so aisle gaps can be detected.
+        # Avoid the cross-aisle band (rows cleared horizontally) and shelf-zone
+        # boundary rows by picking a row inside the upper shelf block.
+        ca_top  = g.cross_aisle_row if g.cross_aisle_row is not None else g.shelf_end_row
+        ca_bot  = (g.cross_aisle_row + g.cross_aisle_width - 1
+                   if g.cross_aisle_row is not None else g.shelf_end_row)
+        shelf_scan_row = (g.shelf_start_row + ca_top - 1) // 2
+        # Guard: if scan row landed in the cross-aisle band, nudge it up
+        if g.shelf_start_row <= shelf_scan_row <= ca_top - 1:
+            pass  # already valid
+        else:
+            shelf_scan_row = g.shelf_start_row + 1
+        cells_row = g.cells[shelf_scan_row, :]
+        in_aisle = (cells_row != SHELF) & (cells_row != ITEM)
+
+        # Find contiguous aisle runs (col ranges where in_aisle is True)
+        aisle_runs = []
+        start = None
+        for c in range(grid_cols):
+            if in_aisle[c] and start is None:
+                start = c
+            elif (not in_aisle[c]) and start is not None:
+                aisle_runs.append((start, c - 1))
+                start = None
+        if start is not None:
+            aisle_runs.append((start, grid_cols - 1))
+
+        # Centre aisle = widest aisle run; pick aisle = a narrow one (not boundary)
+        centre_run = max(aisle_runs, key=lambda r: r[1] - r[0])
+        narrow_runs = [r for r in aisle_runs
+                       if r != centre_run and r[0] > 0 and r[1] < grid_cols - 1]
+        pick_run = narrow_runs[0] if narrow_runs else aisle_runs[0]
+
+        # ---- w_a: pick aisle width (arrow INSIDE the aisle, near shelf-start) ----
+        y_w = g.shelf_start_row + 0.5     # one row inside the shelf zone
+        ax.annotate("", xy=(pick_run[0] - 0.5, y_w),
+                    xytext=(pick_run[1] + 0.5, y_w),
+                    arrowprops=ARR_KW, annotation_clip=False)
+        ax.text((pick_run[0] + pick_run[1]) / 2, y_w + 0.9,
+                r"$w_a$", ha="center", va="top", **TXT_KW)
+
+        # ---- w_c: centre aisle width (arrow INSIDE the centre aisle) ----
+        ax.annotate("", xy=(centre_run[0] - 0.5, y_w),
+                    xytext=(centre_run[1] + 0.5, y_w),
+                    arrowprops=ARR_KW, annotation_clip=False)
+        ax.text((centre_run[0] + centre_run[1]) / 2, y_w + 0.9,
+                r"$w_c$", ha="center", va="top", **TXT_KW)
+
+        # ---- n_d: depot count (label near the first depot) ----
+        n_d = len(g.depots)
+        first_dr, first_dc = g.depots[0]
+        ax.text(first_dc, first_dr - 1.2,
+                rf"$n_d = {n_d}$", ha="center", va="bottom", **TXT_KW)
+
+        # ---- r_s and r_e: horizontal arrows aligned with the GRIDLINE at the
+        # top of each row, so the arrow visually rests on a grid line. The tip
+        # stops exactly at the grid boundary (x = -0.5).
+        ROW_ARR = dict(arrowstyle="->", color=ARR_COL, linewidth=1.6,
+                       mutation_scale=18)
+
+        # r_s: top gridline of the first shelf row (y = shelf_start_row - 0.5)
+        y_rs = g.shelf_start_row - 0.5
+        ax.annotate("", xy=(-0.5, y_rs),
+                    xytext=(-2.5, y_rs),
+                    arrowprops=ROW_ARR, annotation_clip=False)
+        ax.text(-2.7, y_rs,
+                rf"$r_s = {g.shelf_start_row}$", ha="right", va="center",
+                **TXT_KW)
+
+        # r_e: bottom gridline of the last shelf row (y = shelf_end_row + 0.5)
+        y_re = g.shelf_end_row + 0.5
+        ax.annotate("", xy=(-0.5, y_re),
+                    xytext=(-2.5, y_re),
+                    arrowprops=ROW_ARR, annotation_clip=False)
+        ax.text(-2.7, y_re,
+                rf"$r_e = {g.shelf_end_row}$", ha="right", va="center",
+                **TXT_KW)
+
+        # ---- r_ca and b_ca: horizontal arrow on the right pointing at the
+        # gridline at the top of the cross-aisle row.
+        if g.cross_aisle_row is not None:
+            y_rca = g.cross_aisle_row - 0.5
+            ax.annotate("", xy=(grid_cols - 0.5, y_rca),
+                        xytext=(grid_cols + 1.5, y_rca),
+                        arrowprops=ROW_ARR, annotation_clip=False)
+            ax.text(grid_cols + 1.7, y_rca,
+                    rf"$r_{{ca}} = {g.cross_aisle_row}$  $(b_{{ca}} = 1)$",
+                    ha="left", va="center", **TXT_KW)
+        else:
+            ax.text(grid_cols + 1.7, (g.shelf_start_row + g.shelf_end_row) / 2,
+                    r"$b_{ca} = 0$ (off)",
+                    ha="left", va="center", **TXT_KW)
 
     ax.set_xlim(-0.5, grid_cols - 0.5)
     ax.set_ylim(grid_rows - 0.5, -0.5)
@@ -262,12 +368,14 @@ def plot_layout(grid_rows=25, grid_cols=35,
 
 def main():
     parser = argparse.ArgumentParser(description="Conflict heatmap visualisation")
-    parser.add_argument("--file",    default="conflict_heatmap.csv",
-                        help="CSV file to read (default: conflict_heatmap.csv)")
-    parser.add_argument("--out",     default="conflict_heatmap.png",
-                        help="Output PNG filename (default: conflict_heatmap.png)")
-    parser.add_argument("--rows",    type=int, default=25, help="Grid rows (default 25)")
-    parser.add_argument("--cols",    type=int, default=35, help="Grid cols (default 35)")
+    parser.add_argument("--file",    default="traffic_heatmap.csv",
+                        help="CSV file to read (default: traffic_heatmap.csv)")
+    parser.add_argument("--out",     default=None,
+                        help="Output PNG filename (default: derived from input filename)")
+    parser.add_argument("--rows",        type=int, default=25, help="Grid rows (default 25)")
+    parser.add_argument("--cols",        type=int, default=35, help="Grid cols (default 35)")
+    parser.add_argument("--shelf-start", type=int, default=2,  help="First shelf row (default 2)")
+    parser.add_argument("--shelf-end",   type=int, default=23, help="Last shelf row (default 23)")
     parser.add_argument("--compare", nargs=2, metavar=("FILE_A", "FILE_B"),
                         help="Compare two heatmap CSVs side-by-side")
     parser.add_argument("--labels",  nargs=2, metavar=("LABEL_A", "LABEL_B"),
@@ -282,8 +390,11 @@ def main():
                         out_file=args.out if args.out != "conflict_heatmap.png"
                                  else "conflict_heatmap_comparison.png")
     else:
+        out = args.out or args.file.replace(".csv", ".png")
         plot_from_csv(filename=args.file, grid_rows=args.rows, grid_cols=args.cols,
-                      out_file=args.out)
+                      out_file=out,
+                      shelf_start_row=args.shelf_start,
+                      shelf_end_row=args.shelf_end)
 
 
 if __name__ == "__main__":
