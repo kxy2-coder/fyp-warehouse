@@ -1,4 +1,4 @@
-# Warehouse Simulation & Reinforcement Learning Layout Optimisation
+# Warehouse Layout Optimisation Using Reinforcement Learning
 
 This repository contains the simulation, reinforcement learning, and analysis code for a final-year project on automated warehouse layout design. 
 
