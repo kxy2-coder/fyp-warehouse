@@ -21,8 +21,8 @@ python rl_env.py --timesteps 10000
 # 3. Visualise training progress
 python plot_training.py
 
-# 4. Run a single deterministic simulation for inspection
-python main.py --agents 6
+# 4. Run a single simulation for inspection 
+python main.py --agents 6 
 ```
 
 ---
