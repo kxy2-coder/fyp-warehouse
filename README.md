@@ -52,7 +52,7 @@ python main.py --agents 6
 
 | File | Role |
 |---|---|
-| `sensitivity_analysis.py` | One-at-a-time sensitivity sweep over all seven layout decision variables. Produces a 4×2 KPI response figure and a ranked sensitivity bar chart. Re-plot from CSV with `--plot-only`. |
+| `sensitivity_analysis.py` | One-at-a-time sensitivity run over all seven layout decision variables. Produces a 4×2 KPI response figure and a ranked sensitivity bar chart. Re-plot from CSV with `--plot-only`. |
 | `plot_training.py` | Reward, KPI, and layout-parameter curves over training episodes. |
 | `plot_training_compare.py` | Overlays reward curves across multiple `(N agents, λ)` runs stored under `Results_final/`. |
 | `plot_agent_traces.py` | 2×2 per-agent figure (picks, distance, idle time, congestion time) from `agent_traces.csv`. Also plots per-tick walking speed from `speed_trace.csv`. |
@@ -81,8 +81,8 @@ Depot column positions are auto-derived from `n_d` using the equal-spacing rule.
 
 | KPI | Definition | Direction |
 |---|---|---|
-| Picks per hour | Jobs completed / training hours | higher better |
-| Distance per agent | Mean metres walked per agent | lower better |
+| Picks per hour | Jobs completed / total shift hour | higher better |
+| Distance per agent |  Travel distance per agent | lower better |
 | Congestion rate | Fraction of walking ticks where agent speed < 0.6 m/s **and** another agent within 0.9 m | lower better |
 
 The reward used by PPO is a weighted sum after each KPI is normalised to `[0, 1]` against bounds in `kpi_bounds.json`:
@@ -106,7 +106,7 @@ python rl_env.py --timesteps 10000
 python plot_training.py
 
 # Run sensitivity analysis on the default layout
-python sensitivity_analysis.py --eval-runs 5 --lambda-base 0.0833
+python sensitivity_analysis.py --eval-runs 10 --lambda-base 0.1
 
 # Export Godot replay of the converged layout
 python record_replay.py --agents 6 --ticks 3600 --out replay.json
@@ -138,11 +138,3 @@ These are produced by the scripts and are not committed:
 Full list in `requirements.txt`.
 
 ---
-
-## Acknowledgements
-
-Pedestrian dynamics simulated via [JuPedSim](https://www.jupedsim.org/) using the Collision-Free Speed Model (Tordeux, Chraibi & Seyfried, 2016).
-
-## Use of AI
-
-AI tools were used in the development of this project for code assistance during simulation and RL environment development, and writing support during drafting. In both cases, all outputs were reviewed, verified, and revised by the author. The ideas, methodology, analysis, and conclusions presented are the author's own.
