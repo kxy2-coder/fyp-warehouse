@@ -20,9 +20,8 @@ runs/
 best_model*
 warehouse_layout_ppo*
 
-# Saved experiment results
+# Saved experiment results (uncurated)
 results/
-Results_final/
 "Layout Results"/
 
 # Generated CSVs (simulation outputs)
@@ -51,6 +50,11 @@ Thumbs.db
 # Windows / WSL artifacts
 *:Zone.Identifier
 
-# Allow specific essentials back in (if you want)
-# !README.md
-# !requirements.txt
+# =============================================================================
+# EXCEPTIONS — must come AFTER the rules they override
+# =============================================================================
+# Final_Training_Results/ is the curated final experiment bundle. Re-include
+# everything inside it despite the global excludes above (*.zip, *.csv, *.png,
+# *.pdf, *.npz). The `**` glob covers files at any depth.
+!Final_Training_Results/
+!Final_Training_Results/**
