@@ -1,12 +1,19 @@
 # =============================================================================
-# metrics.py — Simulation Metrics
+# metrics.py — Metric tracking and per-agent trace logging
 # =============================================================================
-# Owns ALL metric state and logic for the warehouse simulation.
-# Works with the vectorised Agent class (one object managing all workers).
+# Provides two utilities used by main.py and the analysis scripts:
 #
-# Current metrics:
-#   - cell_conflicts : ticks where two or more agents share the same non-depot cell
-#   - spatial_log    : (tick, row, col) of every blocking event for heatmaps
+#   TraceLogger     — records per-agent KPI snapshots (picks, distance,
+#                     idle ticks, walk ticks, slow/congestion ticks) at a
+#                     fixed tick interval. Writes the bin-level history to
+#                     agent_traces.csv for plot_agent_traces.py to read.
+#
+#   MetricsTracker  — accumulates totals during a single run (picks,
+#                     distance, congestion ticks, replenishment events)
+#                     and exposes them to main.py / plot_workload.py.
+#
+# Both work with the JupedSimAgent (Sim_V3) instance shape; the legacy
+# Sim_V2 Agent class is no longer the primary client of this module.
 # =============================================================================
 
 import csv

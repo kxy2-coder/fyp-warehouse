@@ -1,24 +1,28 @@
 # =============================================================================
 # plot_agent_traces.py — Per-Agent Performance Traces
 # =============================================================================
-# Reads agent_traces.csv and produces a 2x2 figure saved as agent_traces.png:
-#   Panel 1: Picks per 10-min bin      — throughput over the shift
-#   Panel 2: Distance per 10-min bin   — metres walked per window
-#   Panel 3: Avg walking speed per bin — m/s while the agent is actively walking
-#                                        reference lines: free speed (1.2 m/s)
-#                                        and congestion threshold (0.24 m/s).
-#                                        line gaps = agent not walking (idle/picking)
-#   Panel 4: Idle ticks per 10-min bin — time spent waiting for jobs
-#                                        high = agents starved of work
-#                                        low  = agents always busy
+# Reads agent_traces.csv and produces a 2x2 figure (agent_traces.png):
 #
-# Together these separate two failure modes:
-#   speed near threshold + low idle  → layout too cramped, agents blocked
-#   speed near free      + high idle → layout has dead zones / too few items
+#   Panel 1: Picks per 10-min bin       — throughput over the shift
+#   Panel 2: Distance per 10-min bin    — metres walked per window
+#   Panel 3: Idle time per 10-min bin   — seconds spent waiting for jobs
+#                                          high = agents starved of work,
+#                                          low  = agents always busy.
+#   Panel 4: Congestion time per bin    — seconds where agent speed dropped
+#                                          below 50% of free speed AND another
+#                                          agent was within 0.9 m. High values
+#                                          flag local congestion hotspots.
+#
+# A separate function (plot_speed_trace) generates a per-tick walking-speed
+# plot from speed_trace.csv, with reference lines for free speed (1.2 m/s)
+# and the congestion threshold (0.6 m/s).
 #
 # Usage:
-#   python plot_agent_traces.py                        # reads agent_traces.csv
-#   python plot_agent_traces.py --file my_traces.csv   # custom filename
+#   python plot_agent_traces.py                            # 2x2 KPI panels
+#   python plot_agent_traces.py --file my_traces.csv       # custom CSV
+#   python plot_agent_traces.py --speed-trace speed_trace.csv
+#                                                          # per-tick speed plot
+#   python plot_agent_traces.py --speed-trace speed_trace.csv --agent 1
 # =============================================================================
 
 import argparse

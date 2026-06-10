@@ -1,20 +1,27 @@
 # =============================================================================
-# agent.py —  Warehouse Workers
+# agent.py — Demand model, shared constants, legacy Agent class
 # =============================================================================
-
+# In Sim_V3 this file holds the pieces that are shared across the codebase:
 #
-# STATE ENCODING (integers instead of strings for numpy compatibility):
+#   1. Demand model    — nhpp_arrival(), get_multiplier() implement the
+#                        non-homogeneous Poisson process used to dispatch
+#                        jobs throughout the simulated shift.
+#   2. Shared constants — SHIFT_TICKS, LAMBDA_BASE, DEMAND_BETA, the state
+#                        machine integers (STATE_WAITING ... STATE_ALL_DONE),
+#                        and timing constants used by main.py / metrics.py.
+#   3. Legacy Agent class — A Sim_V2 grid-based mover that uses pathfinder.py
+#                        (A*) for routing. NOT used by the RL pipeline; kept
+#                        only because plot_workload.py still spins it up to
+#                        visualise the NHPP demand. Real agent movement in
+#                        Sim_V3 is handled by jupedsim_agent.py.
+#
+# STATE ENCODING (integers — keeps numpy arrays homogeneous):
 #   0 = waiting     — at depot, shift not started
 #   1 = to_item     — walking toward target item
-#   2 = picking_up  — dwelling at shelf, physically picking up item
+#   2 = picking_up  — dwelling at shelf
 #   3 = to_depot    — walking back to depot
-#   4 = resting     — at depot, recovering before next order
-#   5 = all_done    — all jobs for this run complete
-#
-# DATA LAYOUT:
-#   Every per-agent value is a 1-D numpy array of length n_agents.
-#   Index i always refers to agent i (0-indexed internally; displayed as i+1).
-#   Paths are kept as a Python list-of-lists (variable length, not numpy-able).
+#   4 = resting     — at depot between orders
+#   5 = all_done    — finished all jobs
 # =============================================================================
 
 import math

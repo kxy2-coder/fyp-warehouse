@@ -1,0 +1,15 @@
+# Training run config — 2026-05-25_01-40-52
+# CLI command used:
+python rl_env.py --timesteps 10000 --eval-runs 3 --calibration-runs 200 --start-mode random --recalibrate --save-runs 10 --agents 8 --lambda-base 0.06 --save-run --run-name agents8lambda0.06
+
+NUM_AGENTS         = 8
+LAMBDA_BASE        = 0.06
+DEMAND_BETA        = 0.3
+GRID_ROWS x COLS   = 25 x 35
+TRAINING_TICKS     = 3600  (TIME_SCALE x8)
+EVAL_RUNS          = 3
+MAX_STEPS_PER_EP   = 10
+Reward weights     = picks 0.3, dist 0.3, cong 0.4
+Start mode         = random
+Timesteps          = 10000
+Calibration runs   = 200

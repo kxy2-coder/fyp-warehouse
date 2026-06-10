@@ -1,13 +1,20 @@
 # =============================================================================
-# plot_heatmap.py — Spatial Conflict Heatmap
+# plot_heatmap.py — Spatial Traffic / Congestion Heatmap
 # =============================================================================
-# Reads conflict_heatmap.csv (row, col, avg_count) and overlays a heatmap on
-# the warehouse grid layout.
+# Reads a per-cell heatmap CSV (row, col, avg_count) and overlays it on the
+# warehouse grid layout. Auto-styles the colour bar based on filename:
+#
+#   traffic_heatmap.csv     → "Avg walking time (s)"
+#   congestion_heatmap.csv  → "Avg congestion time (s)"
+#
+# Supports a side-by-side comparison mode for two layouts (e.g. baseline
+# vs PPO-optimised) using the --compare flag.
 #
 # Usage:
-#   python plot_heatmap.py                                  # default CSV + grid
-#   python plot_heatmap.py --file conflict_heatmap.csv
+#   python plot_heatmap.py                                  # default: traffic_heatmap.csv
+#   python plot_heatmap.py --file congestion_heatmap.csv
 #   python plot_heatmap.py --rows 25 --cols 35
+#   python plot_heatmap.py --shelf-start 2 --shelf-end 23
 #   python plot_heatmap.py --compare layout_a.csv layout_b.csv --labels "A" "B"
 # =============================================================================
 
