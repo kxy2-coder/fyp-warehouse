@@ -1,6 +1,6 @@
 # Warehouse Simulation & Reinforcement Learning Layout Optimisation
 
-This repository contains the simulation, reinforcement learning, and analysis code for a final-year project on automated warehouse layout design. A PPO agent learns to set seven layout parameters (aisle widths, depot count, shelf zone, cross-aisle position/state) by interacting with a JuPedSim-based continuous-space picker simulation.
+This repository contains the simulation, reinforcement learning, and analysis code for a final-year project on automated warehouse layout design. 
 
 ---
 
