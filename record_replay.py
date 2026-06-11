@@ -34,6 +34,7 @@ from grid           import Grid, SHELF, ITEM, DEPOT
 from jupedsim_agent import (JupedSimAgent, FREE_SPEED,
                              STATE_WAITING, STATE_TO_ITEM, STATE_PICKING,
                              STATE_TO_DEPOT, STATE_RESTING, STATE_ALL_DONE)
+import agent as agent_mod
 from agent          import nhpp_arrival, SHIFT_TICKS
 from rl_env         import compute_depot_cols
 
@@ -81,6 +82,8 @@ def parse_args():
                         help="Disable the cross-aisle")
     parser.add_argument("--ticks",          type=int,   default=28800,
                         help="Number of ticks to record (default 28800 = full 8-hour shift)")
+    parser.add_argument("--lambda-base",    type=float, default=None,
+                        help="NHPP base arrival rate per tick (default = agent.py LAMBDA_BASE)")
     parser.add_argument("--seed",           type=int,   default=42,
                         help="Random seed for reproducible replays (default 42)")
     parser.add_argument("--out",            type=str,   default="replay.json",
@@ -95,6 +98,9 @@ def parse_args():
 def main():
     args = parse_args()
     random.seed(args.seed)
+
+    if args.lambda_base is not None:
+        agent_mod.LAMBDA_BASE = args.lambda_base
 
     # ── Resolve depot columns ─────────────────────────────────────────────────
     if args.depot_count is not None:

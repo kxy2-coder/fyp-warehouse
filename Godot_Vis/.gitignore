@@ -1,0 +1,6 @@
+# Godot generated files
+.godot/
+*.uid
+
+# Large replay file (regenerate with record_replay.py)
+replay.json
